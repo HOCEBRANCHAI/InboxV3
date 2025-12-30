@@ -9,6 +9,7 @@ import traceback
 import psutil
 from pathlib import Path
 from typing import List
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,6 +83,10 @@ def log_memory_usage(context: str = ""):
 
 # Log memory at startup
 log_memory_usage("(startup)")
+
+# Thread pool executor for CPU-bound text extraction operations
+# This allows synchronous I/O operations to run without blocking the async event loop
+TEXT_EXTRACTION_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="text_extract")
 
 # Global request timeout handler
 class RequestTimeoutHandler:
@@ -265,10 +270,16 @@ async def analyze_single_file_direct(file: UploadFile, timeout_handler: RequestT
         # Check timeout before text extraction
         timeout_handler.check_timeout()
         
-        # 1. Extract text using the hybrid service with timeout
+        # 1. Extract text using the hybrid service with timeout (async via thread pool)
         try:
             log_memory_usage(f"before text extraction - {file.filename}")
-            extracted_text = textract_service.extract_text_from_upload(tmp_path, file_bytes)
+            # Run synchronous text extraction in thread pool to avoid blocking event loop
+            extracted_text = await asyncio.get_event_loop().run_in_executor(
+                TEXT_EXTRACTION_EXECUTOR,
+                textract_service.extract_text_from_upload,
+                tmp_path,
+                file_bytes
+            )
             log_memory_usage(f"after text extraction - {file.filename}")
         except Exception as e:
             logger.error(f"Text extraction failed for {file.filename}: {str(e)}")
@@ -363,10 +374,16 @@ async def process_single_file(file: UploadFile, timeout_handler: RequestTimeoutH
         # Check timeout before text extraction
         timeout_handler.check_timeout()
         
-        # 1. Extract text using the hybrid service with timeout
+        # 1. Extract text using the hybrid service with timeout (async via thread pool)
         try:
             log_memory_usage(f"before text extraction - {file.filename}")
-            extracted_text = textract_service.extract_text_from_upload(tmp_path, file_bytes)
+            # Run synchronous text extraction in thread pool to avoid blocking event loop
+            extracted_text = await asyncio.get_event_loop().run_in_executor(
+                TEXT_EXTRACTION_EXECUTOR,
+                textract_service.extract_text_from_upload,
+                tmp_path,
+                file_bytes
+            )
             log_memory_usage(f"after text extraction - {file.filename}")
         except Exception as e:
             logger.error(f"Text extraction failed for {file.filename}: {str(e)}")
@@ -534,9 +551,14 @@ async def analyze_multiple_files_consolidated_DISABLED(files: List[UploadFile], 
                 tmp.write(file_bytes)
                 tmp_path = tmp.name
             
-            # Extract text
+            # Extract text (async via thread pool)
             try:
-                extracted_text = textract_service.extract_text_from_upload(tmp_path, file_bytes)
+                extracted_text = await asyncio.get_event_loop().run_in_executor(
+                    TEXT_EXTRACTION_EXECUTOR,
+                    textract_service.extract_text_from_upload,
+                    tmp_path,
+                    file_bytes
+                )
             except Exception as e:
                 logger.error(f"Text extraction failed for {file.filename}: {str(e)}")
                 logger.error(traceback.format_exc())
@@ -787,10 +809,15 @@ async def classify_single_file(file: UploadFile, timeout_handler: RequestTimeout
             tmp.write(file_bytes)
             tmp_path = tmp.name
         
-        # Extract text
+        # Extract text (async via thread pool)
         timeout_handler.check_timeout()
         try:
-            extracted_text = textract_service.extract_text_from_upload(tmp_path, file_bytes)
+            extracted_text = await asyncio.get_event_loop().run_in_executor(
+                TEXT_EXTRACTION_EXECUTOR,
+                textract_service.extract_text_from_upload,
+                tmp_path,
+                file_bytes
+            )
         except Exception as e:
             logger.error(f"Text extraction failed for {file.filename}: {str(e)}")
             logger.error(traceback.format_exc())
@@ -1059,6 +1086,9 @@ async def catch_all(path: str, request: Request):
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Application shutting down...")
+    # Shutdown thread pool executor gracefully
+    TEXT_EXTRACTION_EXECUTOR.shutdown(wait=True)
+    logger.info("Thread pool executor shut down")
 
 if __name__ == "__main__":
     import uvicorn
