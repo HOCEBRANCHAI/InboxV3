@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: document-analysis-api
+    env: python
+    plan: starter  # Change to 'standard' or 'pro' for production
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn main:app -w ${GUNICORN_WORKERS:-4} -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT --timeout 3600 --keep-alive 300 --max-requests 1000 --max-requests-jitter 50 --worker-connections 1000 --preload --graceful-timeout 30
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: GUNICORN_WORKERS
+        value: 4
+      - key: MAX_FILE_SIZE_MB
+        value: 100
+      - key: MAX_TOTAL_SIZE_MB
+        value: 2000
+      - key: MAX_FILES_PER_REQUEST
+        value: 30
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: 1800
+      - key: PER_FILE_TIMEOUT_SECONDS
+        value: 120
+      # Add your secrets in Render dashboard:
+      # - OPENAI_API_KEY
+      # - OPENAI_MODEL (optional, defaults to gpt-4o)
+      # - AWS_ACCESS_KEY_ID (if using Textract)
+      # - AWS_SECRET_ACCESS_KEY (if using Textract)
+      # - AWS_REGION (if using Textract)
+      # - ALLOWED_ORIGINS (comma-separated list of allowed CORS origins)
+
