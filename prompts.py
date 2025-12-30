@@ -1,4 +1,3 @@
-# prompts.py
 
 # PROMPT 1: Routing + Topic Creation - Decides INBOX vs ARCHIVE
 DOCUMENT_ROUTING_AND_TOPIC_PROMPT = """
@@ -106,10 +105,25 @@ Loan/Grant/Financing:
 - Approval/Denial Notification
 - Request for Additional Information
 
+**CRITICAL - Invoices and Bills:**
+- **ALL standard Invoices and Receipts MUST go to INBOX (BANKING_FINANCIAL channel)**
+- Invoices require payment action and should be tracked in INBOX
+- Receipts may require accounting/bookkeeping action
+- Use topic_type: "Invoices" or "Receipts"
+- Use topic_title: "Invoices [Month Year]" or "Receipts [Month Year]"
+
 **CRITICAL - Payment Reminders (Mahnung):**
 - **ALL non-tax Payment Reminders (Mahnung) or Overdue notices MUST go to INBOX**
 - If a document says "Reminder", "Pay within X days", "Overdue", "Mahnung", or "Payment due", it belongs in INBOX, NOT Archive
 - Payment reminders are financial risks and require immediate attention
+
+**CRITICAL - Informational Business Notices:**
+- **Informational business notices that require awareness or action MUST go to INBOX**
+- Digital billing transitions, service changes, policy updates, or important notifications
+- These may require user acknowledgment, action, or awareness
+- Use channel: GENERAL_ACTIONABLE or BANKING_FINANCIAL (depending on content)
+- Use topic_type: "Business Notices" or "Service Updates"
+- Use topic_title: Descriptive title (e.g., "Digital Billing Transition", "Service Policy Update")
 
 F. EMPLOYMENT & PAYROLL Channel
 Employee Registration/Onboarding:
@@ -129,18 +143,20 @@ Trademark/Patent Correspondence:
 ────────────────────────────────
 ARCHIVE BY DEFAULT
 ────────────────────────────────
-Auto-file to ARCHIVE if the document is:
-- A standard Invoice or Receipt (ONLY if it is NOT a reminder/overdue notice)
-- Bank statements
-- Insurance policies
-- Certificates (ISO, compliance certificates)
-- Informational letters with no action required
-- Contracts without immediate action
-- Anything with NO clear compliance action
+Auto-file to ARCHIVE ONLY if the document is:
+- Bank statements (historical records, no action needed)
+- Insurance policies (reference documents, no immediate action)
+- Certificates (ISO, compliance certificates - reference only)
+- Contracts without immediate action (signed contracts for reference)
+- Historical records or archived documents
+- Anything with NO clear action, NO payment required, and NO compliance requirement
 
-**EXCEPTION - DO NOT ARCHIVE:**
-- Payment Reminders (Mahnung) or Overdue notices - These MUST go to INBOX (BANKING_FINANCIAL channel)
+**CRITICAL - DO NOT ARCHIVE (MUST go to INBOX):**
+- **Standard Invoices and Receipts** - These require payment or accounting action (BANKING_FINANCIAL channel)
+- **Payment Reminders (Mahnung) or Overdue notices** - These MUST go to INBOX (BANKING_FINANCIAL channel)
+- **Informational Business Notices** - Digital billing transitions, service changes, policy updates (GENERAL_ACTIONABLE or BANKING_FINANCIAL channel)
 - Any document with "Reminder", "Pay within X days", "Overdue", or "Payment due" language
+- Any document requiring user acknowledgment, action, or awareness
 
 ────────────────────────────────
 URGENCY SIGNALS
@@ -192,6 +208,12 @@ EMPLOYMENT_PAYROLL Channel:
 - "Employee Onboarding/Offboarding"
 - "Wage Tax"
 
+BANKING_FINANCIAL Channel:
+- "Invoices"
+- "Receipts"
+- "Payment Reminders"
+- "Business Notices"
+
 ────────────────────────────────
 TOPIC_TITLE EXAMPLES (Keep Short & Clear)
 ────────────────────────────────
@@ -218,6 +240,13 @@ EMPLOYMENT_PAYROLL Channel:
 - "Employee Onboarding/Offboarding"
 - "Wage Tax"
 
+BANKING_FINANCIAL Channel:
+- "Invoices [Month Year]" (e.g., "Invoices January 2024")
+- "Receipts [Month Year]" (e.g., "Receipts January 2024")
+- "Payment Reminders"
+- "Digital Billing Transition"
+- "Service Policy Update"
+
 RULES:
 - DO NOT create new channels.
 - DO NOT use sub-channels.
@@ -226,8 +255,6 @@ RULES:
 - topic_type: Use short, clear category names (e.g., "VAT", "CIT", "Registration/Change Notices")
 - topic_title: Include period/year when relevant (e.g., "Q1 2024 VAT", "2023 CIT"), otherwise use short descriptive title
 - Keep both topic_type and topic_title SHORT and CLEAR
-- ONE-SENTENCE RULE: If you cannot confidently name the action the user must take, the document goes to ARCHIVE.
-
 **CRITICAL RULE - Payment Reminders:**
 - A Payment Reminder (Mahnung) is a financial risk; it must NEVER be Archived.
 - ALL payment reminders, overdue notices, or documents with "Pay within X days" MUST be routed to INBOX (BANKING_FINANCIAL channel).
@@ -295,100 +322,3 @@ STRICT RULES
 - If no explicit action is required, state this clearly
 - Do NOT reference channels, topics, workflows, or UI concepts
 """
-
-# # Consolidated Channel Analysis Prompt - For analyzing multiple documents in a channel
-# CONSOLIDATED_CHANNEL_ANALYSIS_PROMPT = """
-# You are an expert compliance assistant analyzing multiple documents within a single INBOX CHANNEL.
-
-# You will receive:
-# - Combined text from multiple documents in the same channel
-# - Channel name (e.g., TAX, KVK, LEGAL_COMPLIANCE)
-# - List of topics within this channel
-# - File information for each document
-
-# Your task is to:
-# 1. Provide a comprehensive summary across all documents in the channel
-# 2. Extract key compliance data aggregated from all documents
-# 3. Identify patterns, trends, and cross-document insights
-# 4. Suggest consolidated next actions
-
-# ────────────────────────────────
-# OUTPUT (STRICT JSON ONLY)
-# ────────────────────────────────
-
-# {
-#   "comprehensive_summary": "Comprehensive summary with specific details, amounts, dates, company names, and the primary purpose of all documents in this channel",
-#   "key_findings": [
-#     "Key finding 1 with specific details (e.g., 'Multiple VAT filing reminders for Q1, Q2, Q3 2024 with total tax due of €7,500')",
-#     "Key finding 2 with specific details"
-#   ],
-#   "aggregated_data": {
-#     "total_amount": "€ value or null",
-#     "deadlines": ["YYYY-MM-DD", "YYYY-MM-DD"],
-#     "authorities": ["Authority 1", "Authority 2"],
-#     "periods_covered": ["Q1 2024", "Q2 2024"],
-#     "document_count": 5
-#   },
-#   "actionable_items": [
-#     {
-#       "type": "workflow | ai_chat | tutorial | document_draft | calculation",
-#       "action": "SYSTEM_ACTION_IDENTIFIER",
-#       "label": "User-facing button label",
-#       "priority": 1,
-#       "applies_to": "Which documents this action applies to"
-#     }
-#   ],
-#   "priority_actions": [
-#     "Most urgent action 1 with specific details and deadline",
-#     "Most urgent action 2 with specific details and deadline"
-#   ],
-#   "risk_assessment": "Overall risk if channel items are ignored"
-# }
-
-# ────────────────────────────────
-# CHANNEL-SPECIFIC EXTRACTION RULES
-# ────────────────────────────────
-
-# **TAX Channel:**
-# - Extract: tax_period, tax_type, amounts, deadlines, tax_authority
-# - Focus: Filing deadlines, payment amounts, penalties
-
-# **KVK Channel:**
-# - Extract: company_name, kvk_number, registration_changes, deadlines
-# - Focus: Compliance deadlines, required updates, UBO changes
-
-# **LEGAL_COMPLIANCE Channel:**
-# - Extract: legal_entities, effective_dates, regulatory_requirements
-# - Focus: Contract deadlines, compliance requirements, board resolutions
-
-# **PERMITS_LICENSES Channel:**
-# - Extract: permit_type, issuing_authority, validity_dates, renewal_dates
-# - Focus: Expiry dates, renewal requirements
-
-# **BANKING_FINANCIAL Channel:**
-# - Extract: bank_name, account_numbers, kyc_requirements, deadlines
-# - Focus: Compliance updates, account changes
-
-# **EMPLOYMENT_PAYROLL Channel:**
-# - Extract: employee_data, payroll_period, registration_requirements
-# - Focus: Employee onboarding/offboarding, payroll compliance
-
-# **INTELLECTUAL_PROPERTY Channel:**
-# - Extract: ip_type, registration_number, renewal_dates
-# - Focus: IP protection, renewal deadlines
-
-# ────────────────────────────────
-# RULES
-# ────────────────────────────────
-# - Provide specific, actionable insights with exact amounts and dates
-# - Identify cross-document patterns and trends
-# - Prioritize actions by urgency and deadline
-# - Always include at least one actionable item
-# - If analyzing similar documents (e.g., multiple VAT reminders), aggregate the data
-# - **CRITICAL:** Only consolidate documents with compatible topic types within the same channel
-#   - ✅ OK: Multiple VAT Filing Reminders (Q1, Q2, Q3)
-#   - ✅ OK: Multiple UBO Update Requests
-#   - ❌ NOT OK: VAT + CIT + Payroll mixed together
-#   - If topics are incompatible, note this and analyze separately by topic group
-# """
-
