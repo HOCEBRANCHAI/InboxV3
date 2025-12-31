@@ -7,11 +7,13 @@ import signal
 import sys
 import traceback
 import psutil
+import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
@@ -87,6 +89,18 @@ log_memory_usage("(startup)")
 # Thread pool executor for CPU-bound text extraction operations
 # This allows synchronous I/O operations to run without blocking the async event loop
 TEXT_EXTRACTION_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="text_extract")
+
+# ============================================================================
+# JOB-BASED ARCHITECTURE - Decouples HTTP requests from long-running processing
+# ============================================================================
+# HTTP is not suitable for long-running document processing, so we decouple
+# requests from execution using a job-based architecture with Supabase storage
+# and a separate worker process.
+
+from job_service import create_job, get_job, get_jobs_by_user_id, store_file_data, delete_job, JobStatus
+
+# Note: Job processing is handled by worker.py (separate process)
+# The web server only creates jobs in Supabase and returns immediately
 
 # Global request timeout handler
 class RequestTimeoutHandler:
@@ -704,6 +718,240 @@ async def analyze_multiple_files_consolidated_DISABLED(files: List[UploadFile], 
         log_memory_usage("(consolidated analysis error)")
         raise HTTPException(status_code=500, detail=f"Consolidated analysis failed: {str(e)}")
 
+# ============================================================================
+# ASYNC JOB ENDPOINTS - Return immediately, process in background
+# ============================================================================
+
+@app.post("/classify-documents-async")
+@limiter.limit("25/minute")
+async def classify_documents_async(
+    request: Request, 
+    files: List[UploadFile] = File(...),
+    x_user_id: Optional[str] = Header(None, alias="X-User-ID", description="User identifier from frontend (optional)")
+):
+    """
+    Submit documents for classification (async job pattern).
+    Returns job_id immediately. Use /job/{job_id} to check status and get results.
+    Solves Cloudflare 504 timeout issues by returning immediately.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    if len(files) > MAX_FILES_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"Maximum {MAX_FILES_PER_REQUEST} files allowed per request")
+    
+    validate_multiple_files_size(files)
+    
+    # Extract user_id from header (optional)
+    user_id = x_user_id or request.headers.get("X-User-ID") or request.headers.get("x-user-id")
+    
+    # Create job in Supabase database first
+    job_id = create_job(endpoint_type="classify", total_files=len(files), user_id=user_id)
+    
+    # Create a directory for this job's files
+    job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save files to disk and store metadata
+    file_data = []
+    for file in files:
+        file_bytes = await file.read()
+        file_size = len(file_bytes)
+        
+        # Save file to disk
+        file_path = job_dir / file.filename
+        with open(file_path, "wb") as f:
+            f.write(file_bytes)
+        
+        # Store metadata (not content)
+        file_data.append({
+            "filename": file.filename,
+            "file_path": str(file_path),  # Absolute path to file on disk
+            "suffix": Path(file.filename).suffix,
+            "size": file_size
+        })
+    
+    # Store file metadata in Supabase (paths, not content)
+    store_file_data(job_id, file_data)
+    
+    # Worker process will pick up this job from the database
+    
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job created. Use /job/{job_id} to check status and get results.",
+        "total_files": len(files),
+        "status_endpoint": f"/job/{job_id}",
+        "estimated_time_seconds": len(files) * 10  # Rough estimate: 10 seconds per file
+    }
+
+@app.post("/analyze-multiple-async")
+@limiter.limit("7/minute")
+async def analyze_multiple_async(
+    request: Request, 
+    files: List[UploadFile] = File(...),
+    x_user_id: Optional[str] = Header(None, alias="X-User-ID", description="User identifier from frontend (optional)")
+):
+    """
+    Submit documents for analysis (async job pattern).
+    Returns job_id immediately. Use /job/{job_id} to check status and get results.
+    Solves Cloudflare 504 timeout issues by returning immediately.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    if len(files) > MAX_FILES_PER_REQUEST:
+        raise HTTPException(status_code=400, detail=f"Maximum {MAX_FILES_PER_REQUEST} files allowed per request")
+    
+    validate_multiple_files_size(files)
+    
+    # Extract user_id from header (optional)
+    user_id = x_user_id or request.headers.get("X-User-ID") or request.headers.get("x-user-id")
+    
+    # Create job in Supabase database first
+    job_id = create_job(endpoint_type="analyze", total_files=len(files), user_id=user_id)
+    
+    # Create a directory for this job's files
+    job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
+    job_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save files to disk and store metadata
+    file_data = []
+    for file in files:
+        file_bytes = await file.read()
+        file_size = len(file_bytes)
+        
+        # Save file to disk
+        file_path = job_dir / file.filename
+        with open(file_path, "wb") as f:
+            f.write(file_bytes)
+        
+        # Store metadata (not content)
+        file_data.append({
+            "filename": file.filename,
+            "file_path": str(file_path),  # Absolute path to file on disk
+            "suffix": Path(file.filename).suffix,
+            "size": file_size
+        })
+    
+    # Store file metadata in Supabase (paths, not content)
+    store_file_data(job_id, file_data)
+    
+    # Worker process will pick up this job from the database
+    
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "message": "Job created. Use /job/{job_id} to check status and get results.",
+        "total_files": len(files),
+        "status_endpoint": f"/job/{job_id}",
+        "estimated_time_seconds": len(files) * 15  # Rough estimate: 15 seconds per file
+    }
+
+@app.get("/job/{job_id}")
+async def get_job_status(
+    job_id: str, 
+    request: Request,
+    x_user_id: Optional[str] = Header(None, alias="X-User-ID", description="User identifier for security (optional, verifies job ownership)")
+):
+    """
+    Get job status and results.
+    Returns job status, progress, and results (if completed).
+    """
+    # Extract user_id from header (optional, for security)
+    user_id = x_user_id or request.headers.get("X-User-ID") or request.headers.get("x-user-id")
+    
+    # Get job (with user_id verification if provided)
+    job = get_job(job_id, user_id=user_id)
+    
+    if not job:
+        if user_id:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found or doesn't belong to user")
+        else:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    response = {
+        "job_id": job_id,
+        "status": job["status"],
+        "progress": job["progress"],
+        "created_at": job["created_at"],
+        "updated_at": job["updated_at"]
+    }
+    
+    if job.get("total_files"):
+        response["total_files"] = job["total_files"]
+        response["processed_files"] = job.get("processed_files", 0)
+    
+    # Include result if completed
+    if job["status"] == JobStatus.COMPLETED and job.get("result"):
+        response["result"] = job["result"]
+    
+    # Include error if failed
+    if job["status"] == JobStatus.FAILED and job.get("error"):
+        response["error"] = job["error"]
+    
+    return response
+
+@app.get("/jobs")
+async def get_user_jobs(
+    request: Request, 
+    status: Optional[str] = None, 
+    limit: int = 100,
+    x_user_id: str = Header(..., alias="X-User-ID", description="User identifier from frontend (required)")
+):
+    """
+    Get all jobs for the current user (from X-User-ID header).
+    
+    Query Parameters:
+        status (optional): Filter by status (pending, processing, completed, failed)
+        limit (optional): Maximum number of jobs to return (default: 100)
+    """
+    # user_id is now required via Header parameter, so it's guaranteed to be set
+    user_id = x_user_id
+    
+    # Validate status if provided
+    if status and status not in ["pending", "processing", "completed", "failed"]:
+        raise HTTPException(status_code=400, detail="Invalid status. Must be: pending, processing, completed, or failed")
+    
+    # Get jobs for user
+    jobs = get_jobs_by_user_id(user_id, status=status, limit=limit)
+    
+    return {
+        "user_id": user_id,
+        "total_jobs": len(jobs),
+        "status_filter": status,
+        "jobs": jobs
+    }
+
+@app.delete("/job/{job_id}")
+async def delete_job_endpoint(
+    job_id: str, 
+    request: Request,
+    x_user_id: Optional[str] = Header(None, alias="X-User-ID", description="User identifier for security (optional, verifies job ownership)")
+):
+    """
+    Delete a job from Supabase (cleanup).
+    """
+    # Extract user_id from header (optional, for security)
+    user_id = x_user_id or request.headers.get("X-User-ID") or request.headers.get("x-user-id")
+    
+    # Verify job belongs to user if user_id provided
+    if user_id:
+        job = get_job(job_id, user_id=user_id)
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found or doesn't belong to user")
+    
+    success = delete_job(job_id)
+    if success:
+        logger.info(f"Job {job_id} deleted")
+        return {"message": f"Job {job_id} deleted"}
+    else:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+# ============================================================================
+# ORIGINAL SYNC ENDPOINTS (kept for backward compatibility)
+# ============================================================================
+
 @app.get("/", status_code=200)
 async def root():
     """Root endpoint for load balancer health checks"""
@@ -1077,7 +1325,10 @@ async def catch_all(path: str, request: Request):
                 "/health",
                 "/analyze",
                 "/analyze-multiple",
-                "/classify-documents"
+                "/classify-documents",
+                "/classify-documents-async",
+                "/analyze-multiple-async",
+                "/job/{job_id}"
             ]
         }
     )

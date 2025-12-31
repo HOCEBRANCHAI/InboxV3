@@ -171,7 +171,22 @@ def extract_text_from_upload(file_path: str, file_bytes: bytes) -> str:
                 logging.error(f"AWS Textract API error ({error_code}): {e}")
                 return ""
         except Exception as e:
-            logging.error(f"Unexpected Textract error: {e}")
+            error_msg = str(e)
+            if "Could not connect" in error_msg or "endpoint" in error_msg.lower():
+                logging.error(f"AWS Textract connection error: {e}")
+                logging.error("Possible causes:")
+                logging.error("  1. Network connectivity issue - check internet connection")
+                logging.error("  2. Firewall/proxy blocking AWS endpoints")
+                logging.error("  3. Invalid AWS_REGION - current region: %s", os.getenv("AWS_REGION"))
+                logging.error("  4. AWS credentials may be invalid or expired")
+                logging.error("  5. AWS Textract service may be unavailable in your region")
+                logging.error("Troubleshooting:")
+                logging.error("  - Verify AWS credentials are correct")
+                logging.error("  - Check AWS_REGION is correct (e.g., us-east-1, us-west-2)")
+                logging.error("  - Test network connectivity: ping textract.us-east-1.amazonaws.com")
+                logging.error("  - Check if behind a corporate firewall/proxy")
+            else:
+                logging.error(f"Unexpected Textract error: {e}")
             return ""
     else:
         logging.error("AWS Textract not available. Cannot process scanned documents or images.")

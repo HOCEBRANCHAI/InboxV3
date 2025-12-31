@@ -1,6 +1,7 @@
 services:
+  # Web Service - Handles API requests
   - type: web
-    name: document-analysis-api
+    name: inboxv3-api
     env: python
     plan: starter  # Change to 'standard' or 'pro' for production
     buildCommand: pip install -r requirements.txt
@@ -21,11 +22,36 @@ services:
         value: 1800
       - key: PER_FILE_TIMEOUT_SECONDS
         value: 120
-      # Add your secrets in Render dashboard:
-      # - OPENAI_API_KEY
+      # Add these secrets in Render dashboard (DO NOT put values here):
+      # - OPENAI_API_KEY (required)
+      # - SUPABASE_URL (required)
+      # - SUPABASE_SERVICE_ROLE_KEY (required)
       # - OPENAI_MODEL (optional, defaults to gpt-4o)
-      # - AWS_ACCESS_KEY_ID (if using Textract)
-      # - AWS_SECRET_ACCESS_KEY (if using Textract)
-      # - AWS_REGION (if using Textract)
-      # - ALLOWED_ORIGINS (comma-separated list of allowed CORS origins)
+      # - AWS_ACCESS_KEY_ID (optional, if using Textract)
+      # - AWS_SECRET_ACCESS_KEY (optional, if using Textract)
+      # - AWS_REGION (optional, if using Textract)
+      # - ALLOWED_ORIGINS (optional, comma-separated CORS origins)
 
+  # Background Worker - Processes jobs from database
+  - type: worker
+    name: inboxv3-worker
+    env: python
+    plan: starter  # Change to 'standard' or 'pro' for production
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: WORKER_POLL_INTERVAL_SECONDS
+        value: 5
+      - key: REQUEST_TIMEOUT_SECONDS
+        value: 1800
+      - key: PER_FILE_TIMEOUT_SECONDS
+        value: 120
+      # Add these secrets in Render dashboard (same as web service):
+      # - OPENAI_API_KEY (required)
+      # - SUPABASE_URL (required)
+      # - SUPABASE_SERVICE_ROLE_KEY (required)
+      # - AWS_ACCESS_KEY_ID (optional, if using Textract)
+      # - AWS_SECRET_ACCESS_KEY (optional, if using Textract)
+      # - AWS_REGION (optional, if using Textract)

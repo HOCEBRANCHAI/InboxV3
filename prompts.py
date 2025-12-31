@@ -106,10 +106,25 @@ Loan/Grant/Financing:
 - Approval/Denial Notification
 - Request for Additional Information
 
+**CRITICAL - Invoices and Bills:**
+- **ALL standard Invoices and Receipts MUST go to INBOX (BANKING_FINANCIAL channel)**
+- Invoices require payment action and should be tracked in INBOX
+- Receipts may require accounting/bookkeeping action
+- Use topic_type: "Invoices" or "Receipts"
+- Use topic_title: "Invoices [Month Year]" or "Receipts [Month Year]"
+
 **CRITICAL - Payment Reminders (Mahnung):**
 - **ALL non-tax Payment Reminders (Mahnung) or Overdue notices MUST go to INBOX**
 - If a document says "Reminder", "Pay within X days", "Overdue", "Mahnung", or "Payment due", it belongs in INBOX, NOT Archive
 - Payment reminders are financial risks and require immediate attention
+
+**CRITICAL - Informational Business Notices:**
+- **Informational business notices that require awareness or action MUST go to INBOX**
+- Digital billing transitions, service changes, policy updates, or important notifications
+- These may require user acknowledgment, action, or awareness
+- Use channel: GENERAL_ACTIONABLE or BANKING_FINANCIAL (depending on content)
+- Use topic_type: "Business Notices" or "Service Updates"
+- Use topic_title: Descriptive title (e.g., "Digital Billing Transition", "Service Policy Update")
 
 F. EMPLOYMENT & PAYROLL Channel
 Employee Registration/Onboarding:
@@ -129,18 +144,20 @@ Trademark/Patent Correspondence:
 ────────────────────────────────
 ARCHIVE BY DEFAULT
 ────────────────────────────────
-Auto-file to ARCHIVE if the document is:
-- A standard Invoice or Receipt (ONLY if it is NOT a reminder/overdue notice)
-- Bank statements
-- Insurance policies
-- Certificates (ISO, compliance certificates)
-- Informational letters with no action required
-- Contracts without immediate action
-- Anything with NO clear compliance action
+Auto-file to ARCHIVE ONLY if the document is:
+- Bank statements (historical records, no action needed)
+- Insurance policies (reference documents, no immediate action)
+- Certificates (ISO, compliance certificates - reference only)
+- Contracts without immediate action (signed contracts for reference)
+- Historical records or archived documents
+- Anything with NO clear action, NO payment required, and NO compliance requirement
 
-**EXCEPTION - DO NOT ARCHIVE:**
-- Payment Reminders (Mahnung) or Overdue notices - These MUST go to INBOX (BANKING_FINANCIAL channel)
+**CRITICAL - DO NOT ARCHIVE (MUST go to INBOX):**
+- **Standard Invoices and Receipts** - These require payment or accounting action (BANKING_FINANCIAL channel)
+- **Payment Reminders (Mahnung) or Overdue notices** - These MUST go to INBOX (BANKING_FINANCIAL channel)
+- **Informational Business Notices** - Digital billing transitions, service changes, policy updates (GENERAL_ACTIONABLE or BANKING_FINANCIAL channel)
 - Any document with "Reminder", "Pay within X days", "Overdue", or "Payment due" language
+- Any document requiring user acknowledgment, action, or awareness
 
 ────────────────────────────────
 URGENCY SIGNALS
@@ -192,6 +209,12 @@ EMPLOYMENT_PAYROLL Channel:
 - "Employee Onboarding/Offboarding"
 - "Wage Tax"
 
+BANKING_FINANCIAL Channel:
+- "Invoices"
+- "Receipts"
+- "Payment Reminders"
+- "Business Notices"
+
 ────────────────────────────────
 TOPIC_TITLE EXAMPLES (Keep Short & Clear)
 ────────────────────────────────
@@ -218,6 +241,13 @@ EMPLOYMENT_PAYROLL Channel:
 - "Employee Onboarding/Offboarding"
 - "Wage Tax"
 
+BANKING_FINANCIAL Channel:
+- "Invoices [Month Year]" (e.g., "Invoices January 2024")
+- "Receipts [Month Year]" (e.g., "Receipts January 2024")
+- "Payment Reminders"
+- "Digital Billing Transition"
+- "Service Policy Update"
+
 RULES:
 - DO NOT create new channels.
 - DO NOT use sub-channels.
@@ -226,8 +256,6 @@ RULES:
 - topic_type: Use short, clear category names (e.g., "VAT", "CIT", "Registration/Change Notices")
 - topic_title: Include period/year when relevant (e.g., "Q1 2024 VAT", "2023 CIT"), otherwise use short descriptive title
 - Keep both topic_type and topic_title SHORT and CLEAR
-- ONE-SENTENCE RULE: If you cannot confidently name the action the user must take, the document goes to ARCHIVE.
-
 **CRITICAL RULE - Payment Reminders:**
 - A Payment Reminder (Mahnung) is a financial risk; it must NEVER be Archived.
 - ALL payment reminders, overdue notices, or documents with "Pay within X days" MUST be routed to INBOX (BANKING_FINANCIAL channel).
