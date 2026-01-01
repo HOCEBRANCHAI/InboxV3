@@ -866,9 +866,15 @@ async def get_job_status(
     
     if not job:
         if user_id:
-            raise HTTPException(status_code=404, detail=f"Job {job_id} not found or doesn't belong to user")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Job {job_id} not found. Possible reasons: (1) Job doesn't exist, (2) Job was created with different X-User-ID, or (3) Job was created without X-User-ID header. Try querying without X-User-ID header or use the same X-User-ID used when creating the job."
+            )
         else:
-            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Job {job_id} not found. The job may not exist in the database or was deleted."
+            )
     
     response = {
         "job_id": job_id,
