@@ -9,18 +9,44 @@ import tempfile
 import traceback
 from pathlib import Path
 from typing import Dict, List
-from dotenv import load_dotenv
-import textract_service
-import openai_service
-from job_service import (
-    get_pending_jobs, 
-    update_job_status, 
-    get_file_data,
-    JobStatus,
-    download_file_from_storage
-)
 
+# Print before imports to catch import errors
+print("Loading environment variables...", flush=True)
+from dotenv import load_dotenv
 load_dotenv()
+
+print("Importing modules...", flush=True)
+try:
+    import textract_service
+    print("✓ textract_service imported", flush=True)
+except Exception as e:
+    print(f"✗ ERROR importing textract_service: {e}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
+
+try:
+    import openai_service
+    print("✓ openai_service imported", flush=True)
+except Exception as e:
+    print(f"✗ ERROR importing openai_service: {e}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
+
+try:
+    from job_service import (
+        get_pending_jobs, 
+        update_job_status, 
+        get_file_data,
+        JobStatus,
+        download_file_from_storage
+    )
+    print("✓ job_service imported", flush=True)
+except Exception as e:
+    print(f"✗ ERROR importing job_service: {e}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
+
+print("All modules imported successfully", flush=True)
 
 # Configure logging
 logging.basicConfig(
