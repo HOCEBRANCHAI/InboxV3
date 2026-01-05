@@ -309,6 +309,7 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
             # Handle different formats:
             # 1. Already a list (JSONB returned as object) - ideal case
             if isinstance(file_data, list):
+                print(f"SUCCESS: file_storage_urls is already a list for job {job_id} ({len(file_data)} files)", flush=True)
                 logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
                 return file_data
             
@@ -342,8 +343,13 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
                         parsed = json.loads(parsed)
                     
                     file_data = parsed
-                    print(f"Successfully parsed file_storage_urls JSON string for job {job_id}, got {len(file_data) if isinstance(file_data, list) else 'non-list'} items", flush=True)
-                    logger.info(f"Successfully parsed file_storage_urls JSON string for job {job_id}")
+                    if isinstance(file_data, list):
+                        print(f"SUCCESS: Parsed file_storage_urls JSON string for job {job_id}, got {len(file_data)} items", flush=True)
+                        logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
+                        return file_data
+                    else:
+                        print(f"ERROR: Parsed result is not a list: {type(file_data)}", flush=True)
+                        raise ValueError(f"Parsed file_storage_urls is not a list: {type(file_data)}")
                 except json.JSONDecodeError as e:
                     print(f"JSON decode error: {e}", flush=True)
                     logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}: {e}")
@@ -357,21 +363,26 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
                         while cleaned.startswith('"') and cleaned.endswith('"'):
                             cleaned = cleaned[1:-1]
                         parsed = json.loads(cleaned)
-                        file_data = parsed
-                        print(f"Successfully parsed after aggressive cleaning for job {job_id}", flush=True)
-                        logger.info(f"Successfully parsed after aggressive cleaning for job {job_id}")
+                        if isinstance(parsed, list):
+                            print(f"SUCCESS: Parsed after aggressive cleaning for job {job_id}, got {len(parsed)} items", flush=True)
+                            logger.info(f"Retrieved file storage URLs for job {job_id} ({len(parsed)} files)")
+                            return parsed
+                        else:
+                            print(f"ERROR: Parsed result is not a list after cleaning: {type(parsed)}", flush=True)
+                            raise ValueError(f"Parsed file_storage_urls is not a list: {type(parsed)}")
                     except Exception as e2:
-                        print(f"Failed to parse even after aggressive cleaning: {e2}", flush=True)
+                        print(f"FAILED: Could not parse even after aggressive cleaning: {e2}", flush=True)
                         logger.error(f"Failed to parse even after aggressive cleaning: {e2}")
+                        print(f"Final attempt - trying to parse raw string as-is...", flush=True)
+                        # Last attempt: try parsing the original string directly
+                        try:
+                            final_parsed = json.loads(file_storage_urls)
+                            if isinstance(final_parsed, list):
+                                print(f"SUCCESS: Direct parse of original string worked! Got {len(final_parsed)} items", flush=True)
+                                return final_parsed
+                        except:
+                            pass
                         return None
-            
-            # 3. Should be a list now
-            if not isinstance(file_data, list):
-                logger.error(f"file_storage_urls is not a list after parsing for job {job_id}: {type(file_data)}")
-                return None
-            
-            logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
-            return file_data
         
         # Fallback to old format: file_data (local filesystem)
         file_data_old = job.get("file_data")
