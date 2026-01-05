@@ -278,33 +278,62 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         - Old format: {filename, file_path, suffix, size}
     """
     if not supabase:
+        logger.warning("Supabase not configured. Cannot get file data.")
         return None
     
     try:
         job = get_job(job_id)
         if not job:
+            logger.warning(f"Job {job_id} not found in database")
             return None
         
+        # Debug: Log what columns are available
+        logger.debug(f"Job {job_id} columns: {list(job.keys())}")
+        logger.debug(f"file_storage_urls value: {job.get('file_storage_urls')}")
+        logger.debug(f"file_data value: {job.get('file_data')}")
+        
         # Check for new format: file_storage_urls (Supabase Storage)
-        if job.get("file_storage_urls"):
-            file_data = job["file_storage_urls"]
+        file_storage_urls = job.get("file_storage_urls")
+        if file_storage_urls:
+            file_data = file_storage_urls
+            # Supabase JSONB columns might be returned as dict/list already, or as string
             if isinstance(file_data, str):
-                file_data = json.loads(file_data)
+                try:
+                    file_data = json.loads(file_data)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}: {e}")
+                    return None
+            elif not isinstance(file_data, list):
+                logger.error(f"file_storage_urls is not a list or JSON string for job {job_id}: {type(file_data)}")
+                return None
+            
             logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
             return file_data
         
         # Fallback to old format: file_data (local filesystem)
-        if job.get("file_data"):
-            file_data = job["file_data"]
+        file_data_old = job.get("file_data")
+        if file_data_old:
+            file_data = file_data_old
             if isinstance(file_data, str):
-                file_data = json.loads(file_data)
+                try:
+                    file_data = json.loads(file_data)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse file_data JSON for job {job_id}: {e}")
+                    return None
+            elif not isinstance(file_data, list):
+                logger.error(f"file_data is not a list or JSON string for job {job_id}: {type(file_data)}")
+                return None
+            
             logger.info(f"Retrieved file paths for job {job_id} ({len(file_data)} files)")
             return file_data
         
+        logger.warning(f"No file data found for job {job_id}. file_storage_urls: {file_storage_urls}, file_data: {file_data_old}")
         return None
         
     except Exception as e:
         logger.error(f"Error getting file data for job {job_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket_name: str = "inbox-files") -> Optional[str]:
