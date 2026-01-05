@@ -377,8 +377,33 @@ def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket
         return None
     
     try:
-        # Create file path in storage: {job_id}/{filename}
-        storage_path = f"{job_id}/{filename}"
+        # Sanitize filename to remove invalid characters for Supabase Storage
+        # Supabase Storage doesn't allow: ~, spaces, and some special characters
+        import re
+        from pathlib import Path
+        
+        # Get file extension
+        file_path = Path(filename)
+        file_extension = file_path.suffix
+        file_stem = file_path.stem
+        
+        # Sanitize filename: remove/replace invalid characters
+        # Replace spaces, tildes, and other problematic chars with underscores
+        sanitized_stem = re.sub(r'[~<>:"|?*\s]', '_', file_stem)
+        # Remove any remaining problematic characters
+        sanitized_stem = re.sub(r'[^\w\-_.]', '_', sanitized_stem)
+        # Limit length to avoid issues
+        if len(sanitized_stem) > 200:
+            sanitized_stem = sanitized_stem[:200]
+        
+        sanitized_filename = sanitized_stem + file_extension
+        
+        # Create file path in storage: {job_id}/{sanitized_filename}
+        storage_path = f"{job_id}/{sanitized_filename}"
+        
+        # Log if filename was changed
+        if sanitized_filename != filename:
+            logger.info(f"Sanitized filename: '{filename}' -> '{sanitized_filename}'")
         
         # Upload file to Supabase Storage
         response = supabase.storage.from_(bucket_name).upload(
