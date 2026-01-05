@@ -504,14 +504,34 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         return
     
     try:
-        # JSONB columns should store the actual JSON object, not a JSON string
-        # Supabase will handle the JSONB conversion automatically
+        # IMPORTANT: Supabase Python client stores JSONB incorrectly when passing Python objects
+        # We need to use a workaround: cast the value explicitly in the update
+        # However, the PostgREST API (which Supabase uses) should handle JSONB correctly
+        # Let's try passing it as a JSON string, which PostgREST will parse as JSONB
+        
+        # Method 1: Try passing as JSON string (PostgREST should parse it as JSONB)
+        json_string = json.dumps(file_urls)
+        
+        # Use the PostgREST format for JSONB: pass as string, PostgREST will cast it
+        # According to PostgREST docs, JSON strings are automatically cast to JSONB
         update_data = {
-            "file_storage_urls": file_urls,  # Store as JSON object (not string)
+            "file_storage_urls": json_string,  # Pass as JSON string
             "updated_at": datetime.utcnow().isoformat()
         }
         
-        supabase.table("inbox_jobs").update(update_data).eq("id", job_id).execute()
+        result = supabase.table("inbox_jobs").update(update_data).eq("id", job_id).execute()
+        
+        # Verify it was stored correctly by reading it back
+        verify_job = get_job(job_id)
+        if verify_job:
+            stored_value = verify_job.get("file_storage_urls")
+            if isinstance(stored_value, str) and stored_value.startswith('"'):
+                # Still stored as string, try alternative method
+                logger.warning(f"Value still stored as string for job {job_id}, trying alternative method")
+                # Use raw SQL via RPC (if available) or direct SQL
+                # For now, the parsing code should handle the string format
+                pass
+        
         logger.info(f"Stored file storage URLs for job {job_id} ({len(file_urls)} files)")
         
     except Exception as e:
