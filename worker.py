@@ -461,12 +461,19 @@ async def process_analyze_job(job: Dict):
 
 async def worker_loop():
     """Main worker loop that polls for pending jobs"""
+    # Print to stdout for Render visibility
+    print("=" * 80, flush=True)
+    print("Worker Process Starting", flush=True)
+    print(f"Process ID: {os.getpid()}", flush=True)
+    print("=" * 80, flush=True)
+    
     logger.info("=" * 80)
     logger.info("Worker Process Starting")
     logger.info(f"Process ID: {os.getpid()}")
     logger.info("=" * 80)
     
     poll_interval = int(os.getenv("WORKER_POLL_INTERVAL_SECONDS", "5"))  # Poll every 5 seconds
+    print(f"Poll interval: {poll_interval} seconds", flush=True)
     
     while True:
         try:
@@ -474,6 +481,7 @@ async def worker_loop():
             pending_jobs = get_pending_jobs(limit=10)
             
             if pending_jobs:
+                print(f"Found {len(pending_jobs)} pending job(s)", flush=True)
                 logger.info(f"Found {len(pending_jobs)} pending job(s)")
                 
                 # Process jobs concurrently (up to 3 at a time)
@@ -489,6 +497,7 @@ async def worker_loop():
                 await asyncio.gather(*tasks, return_exceptions=True)
             else:
                 # No jobs, wait before next poll
+                print(f"No pending jobs, waiting {poll_interval} seconds...", flush=True)
                 await asyncio.sleep(poll_interval)
                 
         except KeyboardInterrupt:
@@ -519,7 +528,13 @@ if __name__ == "__main__":
         print("=" * 80, flush=True)
         
         # Run worker loop
-        asyncio.run(worker_loop())
+        print("Starting async worker loop...", flush=True)
+        try:
+            asyncio.run(worker_loop())
+        except Exception as loop_error:
+            print(f"ERROR in async loop: {loop_error}", flush=True)
+            print(traceback.format_exc(), flush=True)
+            raise
     except KeyboardInterrupt:
         print("\nWorker interrupted by user", flush=True)
         sys.exit(0)
