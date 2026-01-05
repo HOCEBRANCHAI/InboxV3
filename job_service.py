@@ -135,6 +135,7 @@ def get_job(job_id: str, user_id: Optional[str] = None) -> Optional[Dict]:
         return None
     
     try:
+        # Explicitly select all columns including file_storage_urls
         query = supabase.table("inbox_jobs").select("*").eq("id", job_id)
         
         # If user_id provided, filter by it for security
@@ -151,6 +152,8 @@ def get_job(job_id: str, user_id: Optional[str] = None) -> Optional[Dict]:
                     job["result"] = json.loads(job["result"])
                 except:
                     pass
+            # Debug: Log what we got
+            logger.debug(f"Retrieved job {job_id}, keys: {list(job.keys())}, file_storage_urls present: {'file_storage_urls' in job}")
             return job
         return None
         
