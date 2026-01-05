@@ -296,15 +296,30 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         file_storage_urls = job.get("file_storage_urls")
         if file_storage_urls:
             file_data = file_storage_urls
-            # Supabase JSONB columns might be returned as dict/list already, or as string
+            
+            # Handle different formats:
+            # 1. Already a list (JSONB returned as object) - ideal case
+            if isinstance(file_data, list):
+                logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
+                return file_data
+            
+            # 2. String that needs parsing (might be double-encoded)
             if isinstance(file_data, str):
                 try:
-                    file_data = json.loads(file_data)
+                    # First parse
+                    parsed = json.loads(file_data)
+                    # If result is still a string, parse again (double-encoded case)
+                    if isinstance(parsed, str):
+                        parsed = json.loads(parsed)
+                    file_data = parsed
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}: {e}")
+                    logger.error(f"Raw value: {file_storage_urls[:200]}...")
                     return None
-            elif not isinstance(file_data, list):
-                logger.error(f"file_storage_urls is not a list or JSON string for job {job_id}: {type(file_data)}")
+            
+            # 3. Should be a list now
+            if not isinstance(file_data, list):
+                logger.error(f"file_storage_urls is not a list after parsing for job {job_id}: {type(file_data)}")
                 return None
             
             logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
@@ -431,8 +446,10 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         return
     
     try:
+        # JSONB columns should store the actual JSON object, not a JSON string
+        # Supabase will handle the JSONB conversion automatically
         update_data = {
-            "file_storage_urls": json.dumps(file_urls),  # Store as JSON string
+            "file_storage_urls": file_urls,  # Store as JSON object (not string)
             "updated_at": datetime.utcnow().isoformat()
         }
         
@@ -441,6 +458,8 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         
     except Exception as e:
         logger.error(f"Error storing file storage URLs for job {job_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         raise
 
 def delete_job(job_id: str) -> bool:
