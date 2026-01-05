@@ -309,19 +309,38 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
                 logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
                 return file_data
             
-            # 2. String that needs parsing (might be double-encoded)
+            # 2. String that needs parsing (might be double-encoded or escaped)
             if isinstance(file_data, str):
                 try:
-                    # First parse
+                    # Remove any leading/trailing whitespace
+                    file_data = file_data.strip()
+                    
+                    # First parse attempt
                     parsed = json.loads(file_data)
+                    
                     # If result is still a string, parse again (double-encoded case)
                     if isinstance(parsed, str):
+                        # Try parsing again
                         parsed = json.loads(parsed)
+                    
                     file_data = parsed
+                    logger.info(f"Successfully parsed file_storage_urls JSON string for job {job_id}")
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}: {e}")
-                    logger.error(f"Raw value: {file_storage_urls[:200]}...")
-                    return None
+                    logger.error(f"Raw value (first 500 chars): {str(file_storage_urls)[:500]}")
+                    # Try to extract JSON from the string if it's wrapped in quotes
+                    try:
+                        # Sometimes Supabase returns JSONB as a string with escaped quotes
+                        # Try unescaping and parsing
+                        unescaped = file_data.replace('\\"', '"').replace('\\n', '\n')
+                        if unescaped.startswith('"') and unescaped.endswith('"'):
+                            unescaped = unescaped[1:-1]  # Remove outer quotes
+                        parsed = json.loads(unescaped)
+                        file_data = parsed
+                        logger.info(f"Successfully parsed after unescaping for job {job_id}")
+                    except Exception as e2:
+                        logger.error(f"Failed to parse even after unescaping: {e2}")
+                        return None
             
             # 3. Should be a list now
             if not isinstance(file_data, list):
