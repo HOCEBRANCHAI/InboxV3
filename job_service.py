@@ -269,30 +269,150 @@ def store_file_data(job_id: str, file_data: List[Dict]):
 
 def get_file_data(job_id: str) -> Optional[List[Dict]]:
     """
-    Retrieve file metadata for a job from Supabase.
+    Retrieve file data for a job from Supabase.
+    Checks both file_storage_urls (new) and file_data (old) for backward compatibility.
     
     Returns:
-        List of file dictionaries with {filename, file_path, suffix, size}
+        List of file dictionaries with:
+        - New format: {filename, storage_url, suffix, size}
+        - Old format: {filename, file_path, suffix, size}
     """
     if not supabase:
         return None
     
     try:
         job = get_job(job_id)
-        if job and job.get("file_data"):
-            # Parse JSON string to get file metadata
-            if isinstance(job["file_data"], str):
-                file_data = json.loads(job["file_data"])
-            else:
-                file_data = job["file_data"]
-            
-            logger.info(f"Retrieved file metadata for job {job_id} ({len(file_data)} files)")
+        if not job:
+            return None
+        
+        # Check for new format: file_storage_urls (Supabase Storage)
+        if job.get("file_storage_urls"):
+            file_data = job["file_storage_urls"]
+            if isinstance(file_data, str):
+                file_data = json.loads(file_data)
+            logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
             return file_data
+        
+        # Fallback to old format: file_data (local filesystem)
+        if job.get("file_data"):
+            file_data = job["file_data"]
+            if isinstance(file_data, str):
+                file_data = json.loads(file_data)
+            logger.info(f"Retrieved file paths for job {job_id} ({len(file_data)} files)")
+            return file_data
+        
         return None
         
     except Exception as e:
         logger.error(f"Error getting file data for job {job_id}: {e}")
         return None
+
+def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket_name: str = "inbox-files") -> Optional[str]:
+    """
+    Upload a file to Supabase Storage and return the public URL.
+    
+    Args:
+        job_id: Job ID (used in file path)
+        filename: Original filename
+        file_bytes: File content as bytes
+        bucket_name: Storage bucket name (default: "inbox-files")
+    
+    Returns:
+        Public URL of uploaded file, or None if upload failed
+    """
+    if not supabase:
+        logger.warning("Supabase not configured. Cannot upload file to storage.")
+        return None
+    
+    try:
+        # Create file path in storage: {job_id}/{filename}
+        storage_path = f"{job_id}/{filename}"
+        
+        # Upload file to Supabase Storage
+        response = supabase.storage.from_(bucket_name).upload(
+            path=storage_path,
+            file=file_bytes,
+            file_options={"content-type": "application/octet-stream", "upsert": "true"}
+        )
+        
+        # Get public URL
+        public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
+        
+        logger.info(f"Uploaded file {filename} to Supabase Storage: {public_url}")
+        return public_url
+        
+    except Exception as e:
+        logger.error(f"Error uploading file {filename} to Supabase Storage: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+def download_file_from_storage(storage_url: str, bucket_name: str = "inbox-files") -> Optional[bytes]:
+    """
+    Download a file from Supabase Storage.
+    
+    Args:
+        storage_url: Public URL or storage path of the file
+        bucket_name: Storage bucket name (default: "inbox-files")
+    
+    Returns:
+        File content as bytes, or None if download failed
+    """
+    if not supabase:
+        logger.warning("Supabase not configured. Cannot download file from storage.")
+        return None
+    
+    try:
+        # Extract storage path from URL if it's a full URL
+        # URL format: https://{project}.supabase.co/storage/v1/object/public/{bucket}/{path}
+        if storage_url.startswith("http"):
+            # Extract path from URL
+            parts = storage_url.split(f"/object/public/{bucket_name}/")
+            if len(parts) > 1:
+                storage_path = parts[1]
+            else:
+                # Fallback: use URL as-is (might be a signed URL)
+                storage_path = storage_url
+        else:
+            # Assume it's already a storage path
+            storage_path = storage_url
+        
+        # Download file from Supabase Storage
+        file_bytes = supabase.storage.from_(bucket_name).download(storage_path)
+        
+        logger.info(f"Downloaded file from Supabase Storage: {storage_path}")
+        return file_bytes
+        
+    except Exception as e:
+        logger.error(f"Error downloading file from Supabase Storage: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
+    """
+    Store file storage URLs for a job in Supabase.
+    
+    Args:
+        job_id: Job ID
+        file_urls: List of file dictionaries with {filename, storage_url, suffix, size}
+    """
+    if not supabase:
+        logger.warning("Supabase not configured. Cannot store file storage URLs.")
+        return
+    
+    try:
+        update_data = {
+            "file_storage_urls": json.dumps(file_urls),  # Store as JSON string
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        supabase.table("inbox_jobs").update(update_data).eq("id", job_id).execute()
+        logger.info(f"Stored file storage URLs for job {job_id} ({len(file_urls)} files)")
+        
+    except Exception as e:
+        logger.error(f"Error storing file storage URLs for job {job_id}: {e}")
+        raise
 
 def delete_job(job_id: str) -> bool:
     """
@@ -314,11 +434,35 @@ def delete_job(job_id: str) -> bool:
         if not job:
             return False
         
+        # Delete files from Supabase Storage if they exist
+        try:
+            file_urls = job.get("file_storage_urls")
+            if file_urls:
+                if isinstance(file_urls, str):
+                    file_urls = json.loads(file_urls)
+                
+                bucket_name = "inbox-files"
+                for file_info in file_urls:
+                    storage_url = file_info.get("storage_url")
+                    if storage_url:
+                        # Extract storage path from URL
+                        if storage_url.startswith("http"):
+                            parts = storage_url.split(f"/object/public/{bucket_name}/")
+                            if len(parts) > 1:
+                                storage_path = parts[1]
+                                try:
+                                    supabase.storage.from_(bucket_name).remove([storage_path])
+                                    logger.info(f"Deleted file from storage: {storage_path}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to delete file from storage: {e}")
+        except Exception as storage_cleanup_error:
+            logger.warning(f"Failed to clean up storage files for job {job_id}: {storage_cleanup_error}")
+        
         # Delete the job
         supabase.table("inbox_jobs").delete().eq("id", job_id).execute()
         logger.info(f"Deleted job {job_id} from Supabase")
         
-        # Also clean up files on disk if they still exist
+        # Also clean up files on disk if they still exist (backward compatibility)
         try:
             import shutil
             from pathlib import Path

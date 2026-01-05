@@ -16,7 +16,8 @@ from job_service import (
     get_pending_jobs, 
     update_job_status, 
     get_file_data,
-    JobStatus
+    JobStatus,
+    download_file_from_storage
 )
 
 load_dotenv()
@@ -91,14 +92,42 @@ async def process_classify_job(job: Dict):
         
         async def process_file(file_info: Dict):
             """Process a single file"""
-            file_path = file_info.get("file_path")
-            if not file_path or not os.path.exists(file_path):
-                raise ValueError(f"File not found: {file_path}")
+            file_bytes = None
+            tmp_path = None
             
             try:
-                # Read file from disk
-                with open(file_path, "rb") as f:
-                    file_bytes = f.read()
+                # Check if file is in Supabase Storage (new way)
+                if "storage_url" in file_info:
+                    storage_url = file_info.get("storage_url")
+                    if not storage_url:
+                        raise ValueError(f"Storage URL not found for {file_info.get('filename')}")
+                    
+                    # Download file from Supabase Storage
+                    file_bytes = download_file_from_storage(storage_url)
+                    if not file_bytes:
+                        raise ValueError(f"Failed to download file from storage: {storage_url}")
+                    
+                    # Save to temporary file for processing
+                    import tempfile
+                    filename = file_info.get("filename", "file")
+                    suffix = file_info.get("suffix", "")
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(file_bytes)
+                        tmp_path = tmp.name
+                    
+                    file_path = tmp_path
+                
+                # Fallback to local filesystem (old way, backward compatibility)
+                elif "file_path" in file_info:
+                    file_path = file_info.get("file_path")
+                    if not file_path or not os.path.exists(file_path):
+                        raise ValueError(f"File not found: {file_path}")
+                    
+                    # Read file from disk
+                    with open(file_path, "rb") as f:
+                        file_bytes = f.read()
+                else:
+                    raise ValueError(f"No file source found for {file_info.get('filename')}. Missing 'storage_url' or 'file_path'.")
                 
                 # Extract text
                 extracted_text = await asyncio.get_event_loop().run_in_executor(
@@ -145,6 +174,13 @@ async def process_classify_job(job: Dict):
                     "status": "error",
                     "error": str(e)
                 }
+            finally:
+                # Clean up temporary file if created from storage
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up temp file {tmp_path}: {cleanup_error}")
         
         # Process all files in parallel
         tasks = [process_file(file_info) for file_info in file_data]
@@ -248,14 +284,42 @@ async def process_analyze_job(job: Dict):
         
         async def process_file(file_info: Dict):
             """Process a single file for analysis"""
-            file_path = file_info.get("file_path")
-            if not file_path or not os.path.exists(file_path):
-                raise ValueError(f"File not found: {file_path}")
+            file_bytes = None
+            tmp_path = None
             
             try:
-                # Read file from disk
-                with open(file_path, "rb") as f:
-                    file_bytes = f.read()
+                # Check if file is in Supabase Storage (new way)
+                if "storage_url" in file_info:
+                    storage_url = file_info.get("storage_url")
+                    if not storage_url:
+                        raise ValueError(f"Storage URL not found for {file_info.get('filename')}")
+                    
+                    # Download file from Supabase Storage
+                    file_bytes = download_file_from_storage(storage_url)
+                    if not file_bytes:
+                        raise ValueError(f"Failed to download file from storage: {storage_url}")
+                    
+                    # Save to temporary file for processing
+                    import tempfile
+                    filename = file_info.get("filename", "file")
+                    suffix = file_info.get("suffix", "")
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(file_bytes)
+                        tmp_path = tmp.name
+                    
+                    file_path = tmp_path
+                
+                # Fallback to local filesystem (old way, backward compatibility)
+                elif "file_path" in file_info:
+                    file_path = file_info.get("file_path")
+                    if not file_path or not os.path.exists(file_path):
+                        raise ValueError(f"File not found: {file_path}")
+                    
+                    # Read file from disk
+                    with open(file_path, "rb") as f:
+                        file_bytes = f.read()
+                else:
+                    raise ValueError(f"No file source found for {file_info.get('filename')}. Missing 'storage_url' or 'file_path'.")
                 
                 # Extract text
                 extracted_text = await asyncio.get_event_loop().run_in_executor(
@@ -297,6 +361,13 @@ async def process_analyze_job(job: Dict):
                     "status": "error",
                     "error": str(e)
                 }
+            finally:
+                # Clean up temporary file if created from storage
+                if tmp_path and os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up temp file {tmp_path}: {cleanup_error}")
         
         # Process all files in parallel
         tasks = [process_file(file_info) for file_info in file_data]

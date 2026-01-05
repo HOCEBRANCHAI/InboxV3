@@ -97,7 +97,10 @@ TEXT_EXTRACTION_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix=
 # requests from execution using a job-based architecture with Supabase storage
 # and a separate worker process.
 
-from job_service import create_job, get_job, get_jobs_by_user_id, store_file_data, delete_job, JobStatus
+from job_service import (
+    create_job, get_job, get_jobs_by_user_id, store_file_data, 
+    delete_job, JobStatus, upload_file_to_storage, store_file_storage_urls
+)
 
 # Note: Job processing is handled by worker.py (separate process)
 # The web server only creates jobs in Supabase and returns immediately
@@ -748,31 +751,46 @@ async def classify_documents_async(
     # Create job in Supabase database first
     job_id = create_job(endpoint_type="classify", total_files=len(files), user_id=user_id)
     
-    # Create a directory for this job's files
-    job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save files to disk and store metadata
-    file_data = []
+    # Upload files to Supabase Storage and store URLs
+    file_urls = []
     for file in files:
         file_bytes = await file.read()
         file_size = len(file_bytes)
         
-        # Save file to disk
-        file_path = job_dir / file.filename
-        with open(file_path, "wb") as f:
-            f.write(file_bytes)
+        # Upload file to Supabase Storage
+        storage_url = upload_file_to_storage(job_id, file.filename, file_bytes)
         
-        # Store metadata (not content)
-        file_data.append({
-            "filename": file.filename,
-            "file_path": str(file_path),  # Absolute path to file on disk
-            "suffix": Path(file.filename).suffix,
-            "size": file_size
-        })
+        if storage_url:
+            # Store storage URL
+            file_urls.append({
+                "filename": file.filename,
+                "storage_url": storage_url,  # Supabase Storage public URL
+                "suffix": Path(file.filename).suffix,
+                "size": file_size
+            })
+        else:
+            # Fallback: if storage upload fails, log error but continue
+            logger.error(f"Failed to upload {file.filename} to Supabase Storage, falling back to local storage")
+            # Fallback to local filesystem (backward compatibility)
+            job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
+            job_dir.mkdir(parents=True, exist_ok=True)
+            file_path = job_dir / file.filename
+            with open(file_path, "wb") as f:
+                f.write(file_bytes)
+            file_urls.append({
+                "filename": file.filename,
+                "file_path": str(file_path),  # Local path (fallback)
+                "suffix": Path(file.filename).suffix,
+                "size": file_size
+            })
     
-    # Store file metadata in Supabase (paths, not content)
-    store_file_data(job_id, file_data)
+    # Store file storage URLs in Supabase (preferred) or file paths (fallback)
+    if any("storage_url" in f for f in file_urls):
+        # Use new storage URLs format
+        store_file_storage_urls(job_id, file_urls)
+    else:
+        # Fallback to old file_data format
+        store_file_data(job_id, file_urls)
     
     # Worker process will pick up this job from the database
     
@@ -811,31 +829,46 @@ async def analyze_multiple_async(
     # Create job in Supabase database first
     job_id = create_job(endpoint_type="analyze", total_files=len(files), user_id=user_id)
     
-    # Create a directory for this job's files
-    job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Save files to disk and store metadata
-    file_data = []
+    # Upload files to Supabase Storage and store URLs
+    file_urls = []
     for file in files:
         file_bytes = await file.read()
         file_size = len(file_bytes)
         
-        # Save file to disk
-        file_path = job_dir / file.filename
-        with open(file_path, "wb") as f:
-            f.write(file_bytes)
+        # Upload file to Supabase Storage
+        storage_url = upload_file_to_storage(job_id, file.filename, file_bytes)
         
-        # Store metadata (not content)
-        file_data.append({
-            "filename": file.filename,
-            "file_path": str(file_path),  # Absolute path to file on disk
-            "suffix": Path(file.filename).suffix,
-            "size": file_size
-        })
+        if storage_url:
+            # Store storage URL
+            file_urls.append({
+                "filename": file.filename,
+                "storage_url": storage_url,  # Supabase Storage public URL
+                "suffix": Path(file.filename).suffix,
+                "size": file_size
+            })
+        else:
+            # Fallback: if storage upload fails, log error but continue
+            logger.error(f"Failed to upload {file.filename} to Supabase Storage, falling back to local storage")
+            # Fallback to local filesystem (backward compatibility)
+            job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
+            job_dir.mkdir(parents=True, exist_ok=True)
+            file_path = job_dir / file.filename
+            with open(file_path, "wb") as f:
+                f.write(file_bytes)
+            file_urls.append({
+                "filename": file.filename,
+                "file_path": str(file_path),  # Local path (fallback)
+                "suffix": Path(file.filename).suffix,
+                "size": file_size
+            })
     
-    # Store file metadata in Supabase (paths, not content)
-    store_file_data(job_id, file_data)
+    # Store file storage URLs in Supabase (preferred) or file paths (fallback)
+    if any("storage_url" in f for f in file_urls):
+        # Use new storage URLs format
+        store_file_storage_urls(job_id, file_urls)
+    else:
+        # Fallback to old file_data format
+        store_file_data(job_id, file_urls)
     
     # Worker process will pick up this job from the database
     
