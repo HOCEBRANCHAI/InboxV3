@@ -517,6 +517,50 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         logger.error(traceback.format_exc())
         raise
 
+def reset_failed_job(job_id: str) -> bool:
+    """
+    Reset a failed job back to pending status so it can be retried.
+    
+    Args:
+        job_id: Job ID to reset
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    if not supabase:
+        logger.warning("Supabase not configured. Cannot reset job.")
+        return False
+    
+    try:
+        # Check if job exists and is failed
+        job = get_job(job_id)
+        if not job:
+            logger.warning(f"Job {job_id} not found")
+            return False
+        
+        if job.get("status") != JobStatus.FAILED:
+            logger.warning(f"Job {job_id} is not in failed status (current: {job.get('status')})")
+            return False
+        
+        # Reset to pending
+        update_data = {
+            "status": JobStatus.PENDING,
+            "error": None,  # Clear error
+            "progress": 0,  # Reset progress
+            "processed_files": 0,  # Reset processed files
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        supabase.table("inbox_jobs").update(update_data).eq("id", job_id).execute()
+        logger.info(f"Reset job {job_id} from failed to pending")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error resetting job {job_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
 def delete_job(job_id: str) -> bool:
     """
     Delete a job from Supabase.
