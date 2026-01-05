@@ -90,13 +90,25 @@ async def process_classify_job(job: Dict):
     endpoint_type = job.get("endpoint_type", "classify")
     
     try:
+        print(f"Processing job {job_id} (type: {endpoint_type})", flush=True)
         logger.info(f"Processing job {job_id} (type: {endpoint_type})")
         update_job_status(job_id, JobStatus.PROCESSING, progress=0)
         
         # Get file data from job
+        print(f"Getting file data for job {job_id}...", flush=True)
         file_data = get_file_data(job_id)
+        print(f"File data result type: {type(file_data)}, length: {len(file_data) if file_data else 0}", flush=True)
+        if file_data:
+            print(f"First file info: {file_data[0] if file_data else 'None'}", flush=True)
         if not file_data:
+            print(f"ERROR: No file data found for job {job_id}", flush=True)
+            # Log the full job data for debugging
+            print(f"Full job data keys: {list(job.keys())}", flush=True)
+            print(f"Job file_storage_urls: {job.get('file_storage_urls')}", flush=True)
+            print(f"Job file_data: {job.get('file_data')}", flush=True)
             raise ValueError("No file data found for job")
+        
+        print(f"Found {len(file_data)} files for job {job_id}", flush=True)
         
         timeout_handler = RequestTimeoutHandler(REQUEST_TIMEOUT)
         timeout_handler.start()
