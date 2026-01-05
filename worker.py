@@ -24,11 +24,13 @@ load_dotenv()
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO,  # Use INFO so debug messages show up
     format='%(asctime)s - %(name)s - %(levelname)s - [PID:%(process)d] - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+# Also set job_service logger to INFO
+logging.getLogger("job_service").setLevel(logging.INFO)
 
 # Worker-specific configuration
 REQUEST_TIMEOUT = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "1800"))  # 30 minutes default

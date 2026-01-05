@@ -287,14 +287,17 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
             logger.warning(f"Job {job_id} not found in database")
             return None
         
-        # Debug: Log what columns are available
-        logger.debug(f"Job {job_id} columns: {list(job.keys())}")
-        logger.debug(f"file_storage_urls value: {job.get('file_storage_urls')}")
-        logger.debug(f"file_data value: {job.get('file_data')}")
+        # Debug: Log what columns are available (use INFO level so it shows in logs)
+        logger.info(f"Job {job_id} - Available columns: {list(job.keys())}")
+        file_storage_urls_raw = job.get("file_storage_urls")
+        file_data_raw = job.get("file_data")
+        logger.info(f"Job {job_id} - file_storage_urls type: {type(file_storage_urls_raw)}, value: {str(file_storage_urls_raw)[:200] if file_storage_urls_raw else 'None'}...")
+        logger.info(f"Job {job_id} - file_data type: {type(file_data_raw)}, value: {str(file_data_raw)[:200] if file_data_raw else 'None'}...")
         
         # Check for new format: file_storage_urls (Supabase Storage)
         file_storage_urls = job.get("file_storage_urls")
-        if file_storage_urls:
+        # Also check if it's None, empty string, or empty list
+        if file_storage_urls is not None and file_storage_urls != "" and file_storage_urls != []:
             file_data = file_storage_urls
             
             # Handle different formats:
@@ -327,7 +330,8 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         
         # Fallback to old format: file_data (local filesystem)
         file_data_old = job.get("file_data")
-        if file_data_old:
+        # Also check if it's None, empty string, or empty list
+        if file_data_old is not None and file_data_old != "" and file_data_old != []:
             file_data = file_data_old
             if isinstance(file_data, str):
                 try:
@@ -342,7 +346,11 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
             logger.info(f"Retrieved file paths for job {job_id} ({len(file_data)} files)")
             return file_data
         
-        logger.warning(f"No file data found for job {job_id}. file_storage_urls: {file_storage_urls}, file_data: {file_data_old}")
+        # Log detailed information for debugging
+        logger.warning(f"No file data found for job {job_id}")
+        logger.warning(f"  - file_storage_urls: {file_storage_urls} (type: {type(file_storage_urls)})")
+        logger.warning(f"  - file_data: {file_data_old} (type: {type(file_data_old)})")
+        logger.warning(f"  - All job keys: {list(job.keys())}")
         return None
         
     except Exception as e:
