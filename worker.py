@@ -474,5 +474,31 @@ async def worker_loop():
             await asyncio.sleep(poll_interval)
 
 if __name__ == "__main__":
-    asyncio.run(worker_loop())
+    try:
+        # Print to stdout immediately so Render shows it
+        print("=" * 80, flush=True)
+        print("Starting worker.py...", flush=True)
+        print(f"Python version: {sys.version}", flush=True)
+        print(f"Working directory: {os.getcwd()}", flush=True)
+        print("=" * 80, flush=True)
+        
+        # Check critical environment variables
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        openai_key = os.getenv("OPENAI_API_KEY")
+        
+        print(f"SUPABASE_URL: {'SET' if supabase_url else 'NOT SET'}", flush=True)
+        print(f"SUPABASE_SERVICE_ROLE_KEY: {'SET' if supabase_key else 'NOT SET'}", flush=True)
+        print(f"OPENAI_API_KEY: {'SET' if openai_key else 'NOT SET'}", flush=True)
+        print("=" * 80, flush=True)
+        
+        # Run worker loop
+        asyncio.run(worker_loop())
+    except KeyboardInterrupt:
+        print("\nWorker interrupted by user", flush=True)
+        sys.exit(0)
+    except Exception as e:
+        print(f"\nFATAL ERROR: Worker failed to start: {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        sys.exit(1)
 
