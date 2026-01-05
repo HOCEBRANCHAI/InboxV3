@@ -291,9 +291,12 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
             return None
         
         # Debug: Log what columns are available (use INFO level so it shows in logs)
+        print(f"Job {job_id} - Available columns: {list(job.keys())}", flush=True)
         logger.info(f"Job {job_id} - Available columns: {list(job.keys())}")
         file_storage_urls_raw = job.get("file_storage_urls")
         file_data_raw = job.get("file_data")
+        print(f"Job {job_id} - file_storage_urls type: {type(file_storage_urls_raw)}, value: {str(file_storage_urls_raw)[:500] if file_storage_urls_raw else 'None'}", flush=True)
+        print(f"Job {job_id} - file_data type: {type(file_data_raw)}, value: {str(file_data_raw)[:500] if file_data_raw else 'None'}", flush=True)
         logger.info(f"Job {job_id} - file_storage_urls type: {type(file_storage_urls_raw)}, value: {str(file_storage_urls_raw)[:200] if file_storage_urls_raw else 'None'}...")
         logger.info(f"Job {job_id} - file_data type: {type(file_data_raw)}, value: {str(file_data_raw)[:200] if file_data_raw else 'None'}...")
         
