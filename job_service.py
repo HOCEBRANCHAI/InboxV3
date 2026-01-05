@@ -314,35 +314,55 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
             
             # 2. String that needs parsing (might be double-encoded or escaped)
             if isinstance(file_data, str):
+                print(f"Parsing JSON string for job {job_id}, length: {len(file_data)}", flush=True)
+                print(f"First 200 chars: {file_data[:200]}", flush=True)
                 try:
                     # Remove any leading/trailing whitespace
-                    file_data = file_data.strip()
+                    file_data_clean = file_data.strip()
+                    
+                    # Check if it's a JSON string wrapped in quotes (double-encoded)
+                    # Example: "\"[{\\\"size\\\": 4361368}]\""
+                    if file_data_clean.startswith('"') and file_data_clean.endswith('"'):
+                        # Remove outer quotes first
+                        file_data_clean = file_data_clean[1:-1]
+                        print(f"Removed outer quotes, new length: {len(file_data_clean)}", flush=True)
+                    
+                    # Unescape the string (handle \\" -> ")
+                    file_data_clean = file_data_clean.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+                    print(f"After unescaping, first 200 chars: {file_data_clean[:200]}", flush=True)
                     
                     # First parse attempt
-                    parsed = json.loads(file_data)
+                    parsed = json.loads(file_data_clean)
+                    print(f"First parse successful, type: {type(parsed)}", flush=True)
                     
                     # If result is still a string, parse again (double-encoded case)
                     if isinstance(parsed, str):
+                        print(f"Result is still string, parsing again...", flush=True)
                         # Try parsing again
                         parsed = json.loads(parsed)
                     
                     file_data = parsed
+                    print(f"Successfully parsed file_storage_urls JSON string for job {job_id}, got {len(file_data) if isinstance(file_data, list) else 'non-list'} items", flush=True)
                     logger.info(f"Successfully parsed file_storage_urls JSON string for job {job_id}")
                 except json.JSONDecodeError as e:
+                    print(f"JSON decode error: {e}", flush=True)
                     logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}: {e}")
                     logger.error(f"Raw value (first 500 chars): {str(file_storage_urls)[:500]}")
-                    # Try to extract JSON from the string if it's wrapped in quotes
+                    # Try one more time with different approach
                     try:
-                        # Sometimes Supabase returns JSONB as a string with escaped quotes
-                        # Try unescaping and parsing
-                        unescaped = file_data.replace('\\"', '"').replace('\\n', '\n')
-                        if unescaped.startswith('"') and unescaped.endswith('"'):
-                            unescaped = unescaped[1:-1]  # Remove outer quotes
-                        parsed = json.loads(unescaped)
+                        # Sometimes the string has extra escaping
+                        # Try removing all escape sequences
+                        cleaned = file_data.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+                        # Remove any outer quotes
+                        while cleaned.startswith('"') and cleaned.endswith('"'):
+                            cleaned = cleaned[1:-1]
+                        parsed = json.loads(cleaned)
                         file_data = parsed
-                        logger.info(f"Successfully parsed after unescaping for job {job_id}")
+                        print(f"Successfully parsed after aggressive cleaning for job {job_id}", flush=True)
+                        logger.info(f"Successfully parsed after aggressive cleaning for job {job_id}")
                     except Exception as e2:
-                        logger.error(f"Failed to parse even after unescaping: {e2}")
+                        print(f"Failed to parse even after aggressive cleaning: {e2}", flush=True)
+                        logger.error(f"Failed to parse even after aggressive cleaning: {e2}")
                         return None
             
             # 3. Should be a list now
