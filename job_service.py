@@ -226,10 +226,31 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
             .limit(limit)\
             .execute()
         
-        return response.data if response.data else []
+        jobs = response.data if response.data else []
+        if jobs:
+            print(f"Found {len(jobs)} pending job(s) in database", flush=True)
+            for job in jobs:
+                print(f"  - Job {job.get('id')}: {job.get('endpoint_type')}, {job.get('total_files')} files, created: {job.get('created_at')}", flush=True)
+        else:
+            # Debug: Check if there are any jobs at all
+            all_jobs_response = supabase.table("inbox_jobs")\
+                .select("id,status,created_at")\
+                .order("created_at", desc=True)\
+                .limit(5)\
+                .execute()
+            all_jobs = all_jobs_response.data if all_jobs_response.data else []
+            if all_jobs:
+                print(f"DEBUG: No pending jobs, but found {len(all_jobs)} recent jobs with statuses:", flush=True)
+                for job in all_jobs:
+                    print(f"  - Job {job.get('id')}: status={job.get('status')}, created={job.get('created_at')}", flush=True)
+        
+        return jobs
         
     except Exception as e:
+        print(f"ERROR getting pending jobs: {e}", flush=True)
         logger.error(f"Error getting pending jobs from Supabase: {e}")
+        import traceback
+        print(traceback.format_exc(), flush=True)
         return []
 
 def store_file_data(job_id: str, file_data: List[Dict]):
