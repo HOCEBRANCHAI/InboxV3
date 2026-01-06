@@ -152,8 +152,17 @@ def get_job(job_id: str, user_id: Optional[str] = None) -> Optional[Dict]:
                     job["result"] = json.loads(job["result"])
                 except:
                     pass
-            # Debug: Log what we got
-            print(f"get_job: Retrieved job {job_id}, file_storage_urls present: {'file_storage_urls' in job}, type: {type(job.get('file_storage_urls'))}", flush=True)
+            
+            # Debug: Log what we got with more detail
+            file_storage_urls = job.get("file_storage_urls")
+            file_urls = job.get("file_urls")
+            print(f"get_job: Retrieved job {job_id}", flush=True)
+            print(f"  - file_storage_urls present: {'file_storage_urls' in job}", flush=True)
+            print(f"  - file_storage_urls type: {type(file_storage_urls)}", flush=True)
+            print(f"  - file_storage_urls value: {str(file_storage_urls)[:200] if file_storage_urls else 'None'}", flush=True)
+            print(f"  - file_urls present: {'file_urls' in job}", flush=True)
+            print(f"  - file_urls type: {type(file_urls)}", flush=True)
+            print(f"  - file_urls value: {file_urls}", flush=True)
             logger.debug(f"Retrieved job {job_id}, keys: {list(job.keys())}, file_storage_urls present: {'file_storage_urls' in job}")
             return job
         print(f"get_job: Job {job_id} not found in database", flush=True)
@@ -161,6 +170,8 @@ def get_job(job_id: str, user_id: Optional[str] = None) -> Optional[Dict]:
         
     except Exception as e:
         logger.error(f"Error getting job {job_id} from Supabase: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 def get_jobs_by_user_id(user_id: str, status: Optional[str] = None, limit: int = 100) -> List[Dict]:
@@ -371,6 +382,14 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         
         # PRIORITY 2: Check for file_storage_urls (full metadata)
         file_storage_urls = job.get("file_storage_urls")
+        print(f"get_file_data: Checking file_storage_urls for job {job_id}", flush=True)
+        print(f"  - file_storage_urls is None: {file_storage_urls is None}", flush=True)
+        print(f"  - file_storage_urls == '': {file_storage_urls == ''}", flush=True)
+        print(f"  - file_storage_urls == []: {file_storage_urls == []}", flush=True)
+        print(f"  - file_storage_urls type: {type(file_storage_urls)}", flush=True)
+        if file_storage_urls is not None:
+            print(f"  - file_storage_urls value (first 500 chars): {str(file_storage_urls)[:500]}", flush=True)
+        
         # Also check if it's None, empty string, or empty list
         if file_storage_urls is not None and file_storage_urls != "" and file_storage_urls != []:
             # Handle different formats:

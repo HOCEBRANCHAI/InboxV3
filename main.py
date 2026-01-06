@@ -768,64 +768,68 @@ async def classify_documents_async(
             "suffix": Path(file.filename).suffix
         })
     
-    # Upload files to Supabase Storage in background thread pool
-    # This prevents blocking the async event loop
-    def upload_files_background():
-        """Upload files to storage and update DB - runs in thread pool"""
-        file_urls = []
-        for file_data in file_data_list:
-            try:
-                # Upload file to Supabase Storage (blocking operation)
-                # Returns file_path (e.g., "job_id/filename"), not public URL
-                file_path = upload_file_to_storage(job_id, file_data["filename"], file_data["bytes"])
-                
-                if file_path:
-                    file_urls.append({
-                        "filename": file_data["filename"],
-                        "file_path": file_path,  # Store file path (not public URL)
-                        "suffix": file_data["suffix"],
-                        "size": file_data["size"]
-                    })
-                else:
-                    # Fallback: local filesystem
-                    logger.error(f"Failed to upload {file_data['filename']} to Supabase Storage, falling back to local storage")
-                    job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
-                    job_dir.mkdir(parents=True, exist_ok=True)
-                    file_path = job_dir / file_data["filename"]
-                    with open(file_path, "wb") as f:
-                        f.write(file_data["bytes"])
-                    file_urls.append({
-                        "filename": file_data["filename"],
-                        "file_path": str(file_path),
-                        "suffix": file_data["suffix"],
-                        "size": file_data["size"]
-                    })
-            except Exception as e:
-                logger.error(f"Error uploading {file_data['filename']}: {e}")
-                # Continue with other files
+    # Upload files to Supabase Storage in parallel (async via thread pool)
+    # We wait for uploads to complete before returning to ensure files are stored
+    # before the worker picks up the job
+    async def upload_files_async():
+        """Upload files to storage and update DB - runs in thread pool but we await it"""
+        def upload_files_background():
+            """Upload files to storage and update DB - runs in thread pool"""
+            file_urls = []
+            for file_data in file_data_list:
+                try:
+                    # Upload file to Supabase Storage (blocking operation)
+                    # Returns file_path (e.g., "job_id/filename"), not public URL
+                    file_path = upload_file_to_storage(job_id, file_data["filename"], file_data["bytes"])
+                    
+                    if file_path:
+                        file_urls.append({
+                            "filename": file_data["filename"],
+                            "file_path": file_path,  # Store file path (not public URL)
+                            "suffix": file_data["suffix"],
+                            "size": file_data["size"]
+                        })
+                    else:
+                        # Fallback: local filesystem
+                        logger.error(f"Failed to upload {file_data['filename']} to Supabase Storage, falling back to local storage")
+                        job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
+                        job_dir.mkdir(parents=True, exist_ok=True)
+                        file_path = job_dir / file_data["filename"]
+                        with open(file_path, "wb") as f:
+                            f.write(file_data["bytes"])
+                        file_urls.append({
+                            "filename": file_data["filename"],
+                            "file_path": str(file_path),
+                            "suffix": file_data["suffix"],
+                            "size": file_data["size"]
+                        })
+                except Exception as e:
+                    logger.error(f"Error uploading {file_data['filename']}: {e}")
+                    # Continue with other files
+            
+            # Store file paths in database
+            if file_urls:
+                try:
+                    if any("file_path" in f for f in file_urls):
+                        store_file_storage_urls(job_id, file_urls)
+                    elif any("storage_url" in f for f in file_urls):
+                        # Legacy format with storage_url - still supported
+                        store_file_storage_urls(job_id, file_urls)
+                    else:
+                        store_file_data(job_id, file_urls)
+                except Exception as e:
+                    logger.error(f"Failed to store file data for job {job_id}: {e}")
+                    # Update job with error but don't fail the request
+                    from job_service import update_job_status, JobStatus
+                    update_job_status(job_id, JobStatus.FAILED, error=f"Failed to store file data: {str(e)}")
         
-        # Store file paths in database
-        if file_urls:
-            try:
-                if any("file_path" in f for f in file_urls):
-                    store_file_storage_urls(job_id, file_urls)
-                elif any("storage_url" in f for f in file_urls):
-                    # Legacy format with storage_url - still supported
-                    store_file_storage_urls(job_id, file_urls)
-                else:
-                    store_file_data(job_id, file_urls)
-            except Exception as e:
-                logger.error(f"Failed to store file data for job {job_id}: {e}")
-                # Update job with error but don't fail the request
-                from job_service import update_job_status, JobStatus
-                update_job_status(job_id, JobStatus.FAILED, error=f"Failed to store file data: {str(e)}")
+        # Run in thread pool and await completion
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(STORAGE_UPLOAD_EXECUTOR, upload_files_background)
     
-    # Submit upload task to thread pool (non-blocking)
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(STORAGE_UPLOAD_EXECUTOR, upload_files_background)
-    
-    # Return immediately - files will be uploaded in background
-    # Worker will wait for files to be ready before processing
+    # Wait for file uploads to complete before returning
+    # This ensures files are stored in database before worker picks up the job
+    await upload_files_async()
     
     # Worker process will pick up this job from the database
     

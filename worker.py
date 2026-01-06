@@ -116,22 +116,26 @@ async def process_classify_job(job: Dict, retry_count: int = 0, max_retries: int
         update_job_status(job_id, JobStatus.PROCESSING, progress=0)
         
         # Get file data from job with retry logic
+        # Wait longer for files to be uploaded (uploads happen in background thread pool)
         print(f"Getting file data for job {job_id}...", flush=True)
         file_data = None
-        for attempt in range(max_retries + 1):
+        max_file_data_retries = 10  # Wait up to 20 seconds for files to be uploaded
+        for attempt in range(max_file_data_retries + 1):
             try:
                 # IMPORTANT: Always call get_file_data() which fetches fresh data from database
                 file_data = get_file_data(job_id)
-                if file_data:
+                if file_data and len(file_data) > 0:
+                    print(f"SUCCESS: Got file data on attempt {attempt + 1}", flush=True)
                     break
                 # If no data but no exception, wait a bit (files might still be uploading)
-                if attempt < max_retries:
-                    print(f"  No file data yet, waiting 2 seconds (attempt {attempt + 1}/{max_retries + 1})...", flush=True)
-                    await asyncio.sleep(2)
+                if attempt < max_file_data_retries:
+                    wait_time = 2  # Wait 2 seconds between attempts
+                    print(f"  No file data yet, waiting {wait_time} seconds (attempt {attempt + 1}/{max_file_data_retries + 1})...", flush=True)
+                    await asyncio.sleep(wait_time)
             except Exception as e:
-                if is_transient_error(e) and attempt < max_retries:
-                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
-                    print(f"  Transient error getting file data (attempt {attempt + 1}/{max_retries + 1}): {e}", flush=True)
+                if is_transient_error(e) and attempt < max_file_data_retries:
+                    wait_time = 2  # Wait 2 seconds for transient errors too
+                    print(f"  Transient error getting file data (attempt {attempt + 1}/{max_file_data_retries + 1}): {e}", flush=True)
                     print(f"  Retrying in {wait_time} seconds...", flush=True)
                     await asyncio.sleep(wait_time)
                     continue
