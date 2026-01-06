@@ -35,6 +35,7 @@ except Exception as e:
 try:
     from job_service import (
         get_pending_jobs, 
+        claim_job,
         update_job_status, 
         get_file_data,
         JobStatus,
@@ -113,6 +114,8 @@ async def process_classify_job(job: Dict, retry_count: int = 0, max_retries: int
     try:
         print(f"Processing job {job_id} (type: {endpoint_type}, retry: {retry_count}/{max_retries})", flush=True)
         logger.info(f"Processing job {job_id} (type: {endpoint_type}, retry: {retry_count}/{max_retries})")
+        # Job should already be claimed (READY -> PROCESSING) before this runs.
+        # Keep idempotent update for safety.
         update_job_status(job_id, JobStatus.PROCESSING, progress=0)
         
         # Get file data from job with retry logic
@@ -152,16 +155,11 @@ async def process_classify_job(job: Dict, retry_count: int = 0, max_retries: int
         if file_data:
             print(f"SUCCESS: Got file data, first file: {file_data[0].get('filename') if file_data else 'None'}", flush=True)
         if not file_data:
-            print(f"ERROR: No file data found for job {job_id} after {max_file_data_retries + 1} attempts", flush=True)
-            # Get the job again to see what's actually in the database
-            from job_service import get_job
-            job_check = get_job(job_id)
-            if job_check:
-                print(f"  Job exists in database. Keys: {list(job_check.keys())}", flush=True)
-                print(f"  file_storage_urls: {job_check.get('file_storage_urls')}", flush=True)
-                print(f"  file_urls: {job_check.get('file_urls')}", flush=True)
-                print(f"  file_data: {job_check.get('file_data')}", flush=True)
-            raise ValueError("No file data found for job")
+            # PRODUCTION RULE: Worker must never fail jobs for missing inputs.
+            # If inputs are missing, the job should not be READY; set it back to CREATED and exit.
+            logger.warning(f"Job {job_id} has no file data after claim; reverting to CREATED (do not fail)")
+            update_job_status(job_id, JobStatus.CREATED, error=None, progress=0, processed_files=0)
+            return
         
         print(f"Found {len(file_data)} files for job {job_id}", flush=True)
         
@@ -400,7 +398,10 @@ async def process_analyze_job(job: Dict):
         # Get file data from job
         file_data = get_file_data(job_id)
         if not file_data:
-            raise ValueError("No file data found for job")
+            # PRODUCTION RULE: do not fail for missing inputs; revert state.
+            logger.warning(f"Analyze job {job_id} has no file data after claim; reverting to CREATED (do not fail)")
+            update_job_status(job_id, JobStatus.CREATED, error=None, progress=0, processed_files=0)
+            return
         
         timeout_handler = RequestTimeoutHandler(REQUEST_TIMEOUT)
         timeout_handler.start()
@@ -626,7 +627,7 @@ async def worker_loop():
     
     while True:
         try:
-            # Get pending jobs
+            # Get READY jobs only (worker-visible state)
             pending_jobs = get_pending_jobs(limit=10)
             
             if pending_jobs:
@@ -636,7 +637,7 @@ async def worker_loop():
                 logger.info(f"Found {len(pending_jobs)} pending job(s)")
                 
                 # Process jobs concurrently (up to 3 at a time)
-                # Dispatch based on endpoint_type
+                # Atomically claim each job before processing (READY -> PROCESSING)
                 tasks = []
                 for job in pending_jobs[:3]:
                     endpoint_type = job.get("endpoint_type", "classify")
@@ -644,10 +645,16 @@ async def worker_loop():
                     print(f"DISPATCHING job {job_id} (type: {endpoint_type})", flush=True)
                     print(f"  Job total_files: {job.get('total_files')}", flush=True)
                     print(f"  Job created_at: {job.get('created_at')}", flush=True)
+
+                    claimed = claim_job(job_id)
+                    if not claimed:
+                        print(f"SKIPPING job {job_id} - could not claim (already claimed or not READY)", flush=True)
+                        continue
+
                     if endpoint_type == "analyze":
-                        tasks.append(process_analyze_job(job))
+                        tasks.append(process_analyze_job(claimed))
                     else:
-                        tasks.append(process_classify_job(job))
+                        tasks.append(process_classify_job(claimed))
                 
                 print(f"PROCESSING {len(tasks)} job(s) concurrently...", flush=True)
                 print(f"Waiting for tasks to complete...", flush=True)

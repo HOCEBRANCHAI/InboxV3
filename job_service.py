@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 class JobStatus(str, Enum):
     """Job status enumeration"""
-    PENDING = "pending"
+    CREATED = "created"
+    READY = "ready"
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -57,8 +58,14 @@ else:
         logger.error(traceback.format_exc())
         supabase = None
 
-def create_job(document_id: Optional[str] = None, batch_id: Optional[str] = None, 
-               endpoint_type: str = "classify", total_files: int = 0, user_id: Optional[str] = None) -> str:
+def create_job(
+    document_id: Optional[str] = None,
+    batch_id: Optional[str] = None,
+    endpoint_type: str = "classify",
+    total_files: int = 0,
+    user_id: Optional[str] = None,
+    status: JobStatus = JobStatus.CREATED,
+) -> str:
     """
     Create a new job in Supabase and return its ID.
     
@@ -80,7 +87,8 @@ def create_job(document_id: Optional[str] = None, batch_id: Optional[str] = None
             "document_id": document_id,
             "batch_id": batch_id,
             "endpoint_type": endpoint_type,
-            "status": JobStatus.PENDING,
+            # IMPORTANT: created jobs are not visible to workers until READY
+            "status": status,
             "progress": 0,
             "total_files": total_files,
             "processed_files": 0,
@@ -239,7 +247,8 @@ def get_jobs_by_user_id(user_id: str, status: Optional[str] = None, limit: int =
 
 def get_pending_jobs(limit: int = 10) -> List[Dict]:
     """
-    Get pending jobs from Supabase for worker to process.
+    Get READY jobs from Supabase for worker to process.
+    (Legacy name kept to minimize changes; READY is the only worker-visible state.)
     
     Args:
         limit: Maximum number of jobs to return
@@ -254,7 +263,7 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
     try:
         response = supabase.table("inbox_jobs")\
             .select("*")\
-            .eq("status", JobStatus.PENDING)\
+            .eq("status", JobStatus.READY)\
             .order("created_at", desc=False)\
             .limit(limit)\
             .execute()
@@ -309,6 +318,38 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
         import traceback
         logger.debug(traceback.format_exc())
         return []
+
+def claim_job(job_id: str) -> Optional[Dict]:
+    """
+    Atomically claim a READY job by transitioning it to PROCESSING.
+    This enables safe multi-worker scaling.
+    """
+    if not supabase:
+        logger.warning("Supabase not configured. Cannot claim job.")
+        return None
+    try:
+        update_data = {
+            "status": JobStatus.PROCESSING,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        response = (
+            supabase.table("inbox_jobs")
+            .update(update_data)
+            .eq("id", job_id)
+            .eq("status", JobStatus.READY)
+            .execute()
+        )
+        if response.data and len(response.data) > 0:
+            logger.info(f"Claimed job {job_id} (READY -> PROCESSING)")
+            return response.data[0]
+        # Another worker got it (or job not READY)
+        logger.debug(f"Did not claim job {job_id} (not READY or already claimed)")
+        return None
+    except Exception as e:
+        logger.error(f"Error claiming job {job_id}: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return None
 
 def store_file_data(job_id: str, file_data: List[Dict]):
     """

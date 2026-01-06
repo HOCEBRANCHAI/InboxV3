@@ -752,8 +752,8 @@ async def classify_documents_async(
     # Extract user_id from header (optional)
     user_id = x_user_id or request.headers.get("X-User-ID") or request.headers.get("x-user-id")
     
-    # Create job in Supabase database first
-    job_id = create_job(endpoint_type="classify", total_files=len(files), user_id=user_id)
+    # Create job in Supabase database first (CREATED -> not worker-visible yet)
+    job_id = create_job(endpoint_type="classify", total_files=len(files), user_id=user_id, status=JobStatus.CREATED)
     
     # Read all files into memory quickly (async, fast)
     # This is fast because we're just reading bytes, not processing
@@ -827,15 +827,19 @@ async def classify_documents_async(
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(STORAGE_UPLOAD_EXECUTOR, upload_files_background)
     
-    # Wait for file uploads to complete before returning
-    # This ensures files are stored in database before worker picks up the job
+    # Wait for file uploads to complete before returning.
+    # IMPORTANT: Only after uploads + metadata are stored do we mark job READY.
     await upload_files_async()
+
+    # Mark job READY (worker-visible) only after all required inputs are committed
+    from job_service import update_job_status
+    update_job_status(job_id, JobStatus.READY, progress=0, processed_files=0)
     
     # Worker process will pick up this job from the database
     
     return {
         "job_id": job_id,
-        "status": "pending",
+        "status": "created",
         "message": "Job created. Use /job/{job_id} to check status and get results.",
         "total_files": len(files),
         "status_endpoint": f"/job/{job_id}",
@@ -865,8 +869,8 @@ async def analyze_multiple_async(
     # Extract user_id from header (optional)
     user_id = x_user_id or request.headers.get("X-User-ID") or request.headers.get("x-user-id")
     
-    # Create job in Supabase database first
-    job_id = create_job(endpoint_type="analyze", total_files=len(files), user_id=user_id)
+    # Create job in Supabase database first (CREATED -> not worker-visible yet)
+    job_id = create_job(endpoint_type="analyze", total_files=len(files), user_id=user_id, status=JobStatus.CREATED)
     
     # Upload files to Supabase Storage and store URLs
     file_urls = []
@@ -920,12 +924,16 @@ async def analyze_multiple_async(
     except Exception as e:
         logger.error(f"Failed to store file data for job {job_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to store file data: {str(e)}")
+
+    # Mark job READY (worker-visible) only after all required inputs are committed
+    from job_service import update_job_status
+    update_job_status(job_id, JobStatus.READY, progress=0, processed_files=0)
     
     # Worker process will pick up this job from the database
     
     return {
         "job_id": job_id,
-        "status": "pending",
+        "status": "created",
         "message": "Job created. Use /job/{job_id} to check status and get results.",
         "total_files": len(files),
         "status_endpoint": f"/job/{job_id}",
@@ -1000,8 +1008,11 @@ async def get_user_jobs(
     user_id = x_user_id
     
     # Validate status if provided
-    if status and status not in ["pending", "processing", "completed", "failed"]:
-        raise HTTPException(status_code=400, detail="Invalid status. Must be: pending, processing, completed, or failed")
+    if status and status not in ["created", "ready", "processing", "completed", "failed", "pending"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid status. Must be: created, ready, processing, completed, or failed",
+        )
     
     # Get jobs for user
     jobs = get_jobs_by_user_id(user_id, status=status, limit=limit)
