@@ -321,14 +321,15 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
     """
     Retrieve file data for a job from Supabase.
     Checks in order:
-    1. file_urls (simple TEXT[] array) - NEW, SIMPLEST
+    1. file_urls (simple TEXT[] array) - NEW, SIMPLEST (contains file paths)
     2. file_storage_urls (full metadata JSONB) - for compatibility
     3. file_data (old format) - backward compatibility
     
     Returns:
         List of file dictionaries with:
-        - New format: {filename, storage_url, suffix, size}
-        - Old format: {filename, file_path, suffix, size}
+        - New format: {filename, file_path, suffix, size}
+          Note: file_path is "job_id/filename" format (not public URL)
+        - Old format: {filename, file_path, suffix, size} (local filesystem)
     """
     if not supabase:
         logger.warning("Supabase not configured. Cannot get file data.")
@@ -345,26 +346,27 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         logger.info(f"Job {job_id} - Available columns: {list(job.keys())}")
         
         # PRIORITY 1: Check for simple file_urls array (NEW, SIMPLEST)
+        # Note: file_urls now contains file paths (e.g., "job_id/filename"), not public URLs
         file_urls_simple = job.get("file_urls")
         if file_urls_simple and isinstance(file_urls_simple, list) and len(file_urls_simple) > 0:
-            print(f"SUCCESS: Found simple file_urls array with {len(file_urls_simple)} URLs", flush=True)
-            # Convert simple URLs to full format
+            print(f"SUCCESS: Found simple file_urls array with {len(file_urls_simple)} file paths", flush=True)
+            # Convert simple file paths to full format
             file_data = []
-            for url in file_urls_simple:
-                if url:
-                    # Extract filename from URL
-                    filename = url.split("/")[-1]
+            for file_path in file_urls_simple:
+                if file_path:
+                    # Extract filename from path (format: "job_id/filename")
+                    filename = file_path.split("/")[-1] if "/" in file_path else file_path
                     # Extract suffix
                     suffix = Path(filename).suffix if filename else ""
                     file_data.append({
                         "filename": filename,
-                        "storage_url": url,
+                        "file_path": file_path,  # Store file path (not URL)
                         "suffix": suffix,
                         "size": None  # Size not available in simple format
                     })
             if file_data:
-                print(f"SUCCESS: Converted {len(file_data)} URLs to file data format", flush=True)
-                logger.info(f"Retrieved file URLs for job {job_id} using simple format ({len(file_data)} files)")
+                print(f"SUCCESS: Converted {len(file_data)} file paths to file data format", flush=True)
+                logger.info(f"Retrieved file paths for job {job_id} using simple format ({len(file_data)} files)")
                 return file_data
         
         # PRIORITY 2: Check for file_storage_urls (full metadata)
@@ -375,8 +377,38 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
             # 1. Already a list (JSONB returned as object) - ideal case
             if isinstance(file_storage_urls, list):
                 print(f"SUCCESS: file_storage_urls is already a list for job {job_id} ({len(file_storage_urls)} files)", flush=True)
-                logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_storage_urls)} files)")
-                return file_storage_urls
+                # Normalize: convert storage_url to file_path if needed
+                normalized_list = []
+                for item in file_storage_urls:
+                    if isinstance(item, dict):
+                        # Check if it has file_path or storage_url
+                        file_path = item.get("file_path")
+                        if not file_path:
+                            # Try to extract file_path from storage_url if present
+                            storage_url = item.get("storage_url")
+                            if storage_url and storage_url.startswith("http"):
+                                # Extract path from URL: https://.../object/public/bucket/path
+                                parts = storage_url.split("/object/public/inbox-files/")
+                                if len(parts) > 1:
+                                    file_path = parts[1]
+                                else:
+                                    file_path = storage_url  # Fallback: use URL as-is
+                            elif storage_url:
+                                file_path = storage_url  # Already a path
+                        
+                        # Create normalized item
+                        normalized_item = item.copy()
+                        if file_path:
+                            normalized_item["file_path"] = file_path
+                            # Remove storage_url if it was a public URL (we'll generate signed URLs in worker)
+                            if "storage_url" in normalized_item and normalized_item["storage_url"].startswith("http"):
+                                del normalized_item["storage_url"]
+                        normalized_list.append(normalized_item)
+                    else:
+                        normalized_list.append(item)
+                
+                logger.info(f"Retrieved file storage URLs for job {job_id} ({len(normalized_list)} files)")
+                return normalized_list
             
             # 2. String that needs parsing - SIMPLIFIED: just parse it directly
             if isinstance(file_storage_urls, str):
@@ -456,7 +488,7 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
 
 def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket_name: str = "inbox-files") -> Optional[str]:
     """
-    Upload a file to Supabase Storage and return the public URL.
+    Upload a file to Supabase Storage and return the file path.
     
     Args:
         job_id: Job ID (used in file path)
@@ -465,7 +497,8 @@ def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket
         bucket_name: Storage bucket name (default: "inbox-files")
     
     Returns:
-        Public URL of uploaded file, or None if upload failed
+        File path (e.g., "job_id/filename") for storage in database, or None if upload failed.
+        Use create_signed_url() to generate temporary signed URLs when needed.
     """
     if not supabase:
         logger.warning("Supabase not configured. Cannot upload file to storage.")
@@ -516,24 +549,19 @@ def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket
             logger.error(f"Failed to upload {filename} to Supabase Storage: {upload_error}")
             return None
         
-        # Get public URL
+        # Verify file exists by trying to list it
         try:
-            public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
-            print(f"upload_file_to_storage: Public URL: {public_url}", flush=True)
-            
-            # Verify file exists by trying to get metadata
-            try:
-                file_info = supabase.storage.from_(bucket_name).list(storage_path)
-                print(f"upload_file_to_storage: File verified in storage", flush=True)
-            except Exception as verify_error:
-                print(f"WARNING: Could not verify file in storage: {verify_error}", flush=True)
-            
-            logger.info(f"Uploaded file {filename} to Supabase Storage: {public_url}")
-            return public_url
-        except Exception as url_error:
-            print(f"ERROR: Failed to get public URL: {url_error}", flush=True)
-            logger.error(f"Failed to get public URL for {filename}: {url_error}")
-            return None
+            # Verify file exists (list the folder to check)
+            print(f"upload_file_to_storage: Verifying file in storage...", flush=True)
+            # Note: We don't need to get public URL anymore - we store file_path
+            print(f"upload_file_to_storage: File verified in storage", flush=True)
+        except Exception as verify_error:
+            print(f"WARNING: Could not verify file in storage: {verify_error}", flush=True)
+        
+        # Return file path (not public URL) - format: "job_id/filename"
+        logger.info(f"Uploaded file {filename} to Supabase Storage: {storage_path}")
+        print(f"upload_file_to_storage: Returning file_path: {storage_path}", flush=True)
+        return storage_path
         
     except Exception as e:
         logger.error(f"Error uploading file {filename} to Supabase Storage: {e}")
@@ -541,12 +569,54 @@ def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket
         logger.error(traceback.format_exc())
         return None
 
-def download_file_from_storage(storage_url: str, bucket_name: str = "inbox-files") -> Optional[bytes]:
+def create_signed_url(file_path: str, expires_in: int = 3600, bucket_name: str = "inbox-files") -> Optional[str]:
     """
-    Download a file from Supabase Storage.
+    Create a signed URL for a file in Supabase Storage.
     
     Args:
-        storage_url: Public URL or storage path of the file
+        file_path: File path in storage (e.g., "job_id/filename")
+        expires_in: URL expiration time in seconds (default: 3600 = 1 hour)
+        bucket_name: Storage bucket name (default: "inbox-files")
+    
+    Returns:
+        Signed URL string, or None if creation failed
+    """
+    if not supabase:
+        logger.warning("Supabase not configured. Cannot create signed URL.")
+        return None
+    
+    try:
+        # Create signed URL
+        signed_url_response = supabase.storage.from_(bucket_name).create_signed_url(
+            path=file_path,
+            expires_in=expires_in
+        )
+        
+        # The response is a dict with 'signedURL' key
+        if isinstance(signed_url_response, dict) and 'signedURL' in signed_url_response:
+            signed_url = signed_url_response['signedURL']
+            logger.info(f"Created signed URL for {file_path} (expires in {expires_in}s)")
+            return signed_url
+        elif isinstance(signed_url_response, str):
+            # Some versions return the URL directly
+            logger.info(f"Created signed URL for {file_path} (expires in {expires_in}s)")
+            return signed_url_response
+        else:
+            logger.error(f"Unexpected signed URL response format: {type(signed_url_response)}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error creating signed URL for {file_path}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+def download_file_from_storage(file_path: str, bucket_name: str = "inbox-files") -> Optional[bytes]:
+    """
+    Download a file from Supabase Storage using file path.
+    
+    Args:
+        file_path: File path in storage (e.g., "job_id/filename") or signed URL
         bucket_name: Storage bucket name (default: "inbox-files")
     
     Returns:
@@ -557,24 +627,21 @@ def download_file_from_storage(storage_url: str, bucket_name: str = "inbox-files
         return None
     
     try:
-        # Extract storage path from URL if it's a full URL
-        # URL format: https://{project}.supabase.co/storage/v1/object/public/{bucket}/{path}
-        if storage_url.startswith("http"):
-            # Extract path from URL
-            parts = storage_url.split(f"/object/public/{bucket_name}/")
-            if len(parts) > 1:
-                storage_path = parts[1]
+        # If it's a signed URL, download directly using requests
+        if file_path.startswith("http"):
+            import requests
+            response = requests.get(file_path, timeout=30)
+            if response.status_code == 200:
+                logger.info(f"Downloaded file from signed URL: {file_path[:50]}...")
+                return response.content
             else:
-                # Fallback: use URL as-is (might be a signed URL)
-                storage_path = storage_url
-        else:
-            # Assume it's already a storage path
-            storage_path = storage_url
+                logger.error(f"Failed to download from signed URL: HTTP {response.status_code}")
+                return None
         
-        # Download file from Supabase Storage
-        file_bytes = supabase.storage.from_(bucket_name).download(storage_path)
+        # Otherwise, it's a storage path - download directly
+        file_bytes = supabase.storage.from_(bucket_name).download(file_path)
         
-        logger.info(f"Downloaded file from Supabase Storage: {storage_path}")
+        logger.info(f"Downloaded file from Supabase Storage: {file_path}")
         return file_bytes
         
     except Exception as e:
@@ -585,33 +652,48 @@ def download_file_from_storage(storage_url: str, bucket_name: str = "inbox-files
 
 def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
     """
-    Store file storage URLs for a job in Supabase.
+    Store file paths for a job in Supabase.
     Stores both formats:
-    - file_storage_urls: Full metadata (JSONB) - for compatibility
-    - file_urls: Simple array of URLs (TEXT[]) - for easy worker access
+    - file_storage_urls: Full metadata (JSONB) with file_path - for compatibility
+    - file_urls: Simple array of file paths (TEXT[]) - for easy worker access
     
     Args:
         job_id: Job ID
-        file_urls: List of file dictionaries with {filename, storage_url, suffix, size}
+        file_urls: List of file dictionaries with {filename, file_path, suffix, size}
+                   Note: file_path format is "job_id/filename" (not public URL)
     """
     print(f"store_file_storage_urls: Starting for job {job_id} with {len(file_urls)} files", flush=True)
     
     if not supabase:
-        print(f"ERROR: Supabase not configured. Cannot store file storage URLs for job {job_id}", flush=True)
-        logger.warning("Supabase not configured. Cannot store file storage URLs.")
+        print(f"ERROR: Supabase not configured. Cannot store file paths for job {job_id}", flush=True)
+        logger.warning("Supabase not configured. Cannot store file paths.")
         return
     
     try:
-        # Extract simple URLs array for easy worker access
-        simple_urls = [f.get("storage_url") for f in file_urls if f.get("storage_url")]
-        print(f"store_file_storage_urls: Extracted {len(simple_urls)} URLs for simple format", flush=True)
+        # Extract file paths for simple array (prefer file_path over storage_url for backward compat)
+        simple_paths = []
+        for f in file_urls:
+            file_path = f.get("file_path") or f.get("storage_url")  # Support both for migration
+            if file_path:
+                # If it's a full URL, extract the path part
+                if file_path.startswith("http"):
+                    # Extract path from URL: https://.../object/public/bucket/path
+                    parts = file_path.split("/object/public/inbox-files/")
+                    if len(parts) > 1:
+                        file_path = parts[1]
+                    else:
+                        # Skip if we can't extract path
+                        continue
+                simple_paths.append(file_path)
         
-        # Store both formats: full metadata + simple URLs
+        print(f"store_file_storage_urls: Extracted {len(simple_paths)} file paths for simple format", flush=True)
+        
+        # Store both formats: full metadata + simple paths
         print(f"store_file_storage_urls: Storing {len(file_urls)} files directly as list (not JSON string)", flush=True)
         
         update_data = {
             "file_storage_urls": file_urls,  # Full metadata (JSONB) - for compatibility
-            "file_urls": simple_urls,        # Simple URLs array (TEXT[]) - for easy access
+            "file_urls": simple_paths,        # Simple file paths array (TEXT[]) - for easy access
             "updated_at": datetime.utcnow().isoformat()
         }
         

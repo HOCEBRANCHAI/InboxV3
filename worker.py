@@ -38,7 +38,8 @@ try:
         update_job_status, 
         get_file_data,
         JobStatus,
-        download_file_from_storage
+        download_file_from_storage,
+        create_signed_url
     )
     print("✓ job_service imported", flush=True)
 except Exception as e:
@@ -172,12 +173,48 @@ async def process_classify_job(job: Dict, retry_count: int = 0, max_retries: int
             tmp_path = None
             
             try:
-                # Check if file is in Supabase Storage (new way)
-                if "storage_url" in file_info:
+                # PRIORITY 1: Check for file_path (storage path format: "job_id/filename")
+                if "file_path" in file_info:
+                    storage_file_path = file_info.get("file_path")
+                    if not storage_file_path:
+                        raise ValueError(f"File path not found for {file_info.get('filename')}")
+                    
+                    # Check if it's a local filesystem path (backward compatibility)
+                    if os.path.exists(storage_file_path):
+                        # Local filesystem path - read directly
+                        file_path = storage_file_path
+                        with open(file_path, "rb") as f:
+                            file_bytes = f.read()
+                    else:
+                        # Storage path (e.g., "job_id/filename") - generate signed URL and download
+                        print(f"Generating signed URL for file_path: {storage_file_path}", flush=True)
+                        signed_url = create_signed_url(storage_file_path, expires_in=3600)
+                        if not signed_url:
+                            raise ValueError(f"Failed to create signed URL for: {storage_file_path}")
+                        
+                        print(f"Downloading file using signed URL...", flush=True)
+                        # Download file from Supabase Storage using signed URL
+                        file_bytes = download_file_from_storage(signed_url)
+                        if not file_bytes:
+                            raise ValueError(f"Failed to download file from storage: {storage_file_path}")
+                        
+                        # Save to temporary file for processing
+                        import tempfile
+                        filename = file_info.get("filename", "file")
+                        suffix = file_info.get("suffix", "")
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(file_bytes)
+                            tmp_path = tmp.name
+                        
+                        file_path = tmp_path
+                
+                # PRIORITY 2: Check for storage_url (legacy format - backward compatibility)
+                elif "storage_url" in file_info:
                     storage_url = file_info.get("storage_url")
                     if not storage_url:
                         raise ValueError(f"Storage URL not found for {file_info.get('filename')}")
                     
+                    print(f"Downloading file using storage_url (legacy format)...", flush=True)
                     # Download file from Supabase Storage
                     file_bytes = download_file_from_storage(storage_url)
                     if not file_bytes:
@@ -192,18 +229,8 @@ async def process_classify_job(job: Dict, retry_count: int = 0, max_retries: int
                         tmp_path = tmp.name
                     
                     file_path = tmp_path
-                
-                # Fallback to local filesystem (old way, backward compatibility)
-                elif "file_path" in file_info:
-                    file_path = file_info.get("file_path")
-                    if not file_path or not os.path.exists(file_path):
-                        raise ValueError(f"File not found: {file_path}")
-                    
-                    # Read file from disk
-                    with open(file_path, "rb") as f:
-                        file_bytes = f.read()
                 else:
-                    raise ValueError(f"No file source found for {file_info.get('filename')}. Missing 'storage_url' or 'file_path'.")
+                    raise ValueError(f"No file source found for {file_info.get('filename')}. Missing 'file_path' or 'storage_url'.")
                 
                 # Extract text
                 extracted_text = await asyncio.get_event_loop().run_in_executor(
@@ -381,12 +408,48 @@ async def process_analyze_job(job: Dict):
             tmp_path = None
             
             try:
-                # Check if file is in Supabase Storage (new way)
-                if "storage_url" in file_info:
+                # PRIORITY 1: Check for file_path (storage path format: "job_id/filename")
+                if "file_path" in file_info:
+                    storage_file_path = file_info.get("file_path")
+                    if not storage_file_path:
+                        raise ValueError(f"File path not found for {file_info.get('filename')}")
+                    
+                    # Check if it's a local filesystem path (backward compatibility)
+                    if os.path.exists(storage_file_path):
+                        # Local filesystem path - read directly
+                        file_path = storage_file_path
+                        with open(file_path, "rb") as f:
+                            file_bytes = f.read()
+                    else:
+                        # Storage path (e.g., "job_id/filename") - generate signed URL and download
+                        print(f"Generating signed URL for file_path: {storage_file_path}", flush=True)
+                        signed_url = create_signed_url(storage_file_path, expires_in=3600)
+                        if not signed_url:
+                            raise ValueError(f"Failed to create signed URL for: {storage_file_path}")
+                        
+                        print(f"Downloading file using signed URL...", flush=True)
+                        # Download file from Supabase Storage using signed URL
+                        file_bytes = download_file_from_storage(signed_url)
+                        if not file_bytes:
+                            raise ValueError(f"Failed to download file from storage: {storage_file_path}")
+                        
+                        # Save to temporary file for processing
+                        import tempfile
+                        filename = file_info.get("filename", "file")
+                        suffix = file_info.get("suffix", "")
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                            tmp.write(file_bytes)
+                            tmp_path = tmp.name
+                        
+                        file_path = tmp_path
+                
+                # PRIORITY 2: Check for storage_url (legacy format - backward compatibility)
+                elif "storage_url" in file_info:
                     storage_url = file_info.get("storage_url")
                     if not storage_url:
                         raise ValueError(f"Storage URL not found for {file_info.get('filename')}")
                     
+                    print(f"Downloading file using storage_url (legacy format)...", flush=True)
                     # Download file from Supabase Storage
                     file_bytes = download_file_from_storage(storage_url)
                     if not file_bytes:
@@ -401,18 +464,8 @@ async def process_analyze_job(job: Dict):
                         tmp_path = tmp.name
                     
                     file_path = tmp_path
-                
-                # Fallback to local filesystem (old way, backward compatibility)
-                elif "file_path" in file_info:
-                    file_path = file_info.get("file_path")
-                    if not file_path or not os.path.exists(file_path):
-                        raise ValueError(f"File not found: {file_path}")
-                    
-                    # Read file from disk
-                    with open(file_path, "rb") as f:
-                        file_bytes = f.read()
                 else:
-                    raise ValueError(f"No file source found for {file_info.get('filename')}. Missing 'storage_url' or 'file_path'.")
+                    raise ValueError(f"No file source found for {file_info.get('filename')}. Missing 'file_path' or 'storage_url'.")
                 
                 # Extract text
                 extracted_text = await asyncio.get_event_loop().run_in_executor(

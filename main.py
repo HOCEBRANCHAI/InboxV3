@@ -776,12 +776,13 @@ async def classify_documents_async(
         for file_data in file_data_list:
             try:
                 # Upload file to Supabase Storage (blocking operation)
-                storage_url = upload_file_to_storage(job_id, file_data["filename"], file_data["bytes"])
+                # Returns file_path (e.g., "job_id/filename"), not public URL
+                file_path = upload_file_to_storage(job_id, file_data["filename"], file_data["bytes"])
                 
-                if storage_url:
+                if file_path:
                     file_urls.append({
                         "filename": file_data["filename"],
-                        "storage_url": storage_url,
+                        "file_path": file_path,  # Store file path (not public URL)
                         "suffix": file_data["suffix"],
                         "size": file_data["size"]
                     })
@@ -803,10 +804,13 @@ async def classify_documents_async(
                 logger.error(f"Error uploading {file_data['filename']}: {e}")
                 # Continue with other files
         
-        # Store file URLs in database
+        # Store file paths in database
         if file_urls:
             try:
-                if any("storage_url" in f for f in file_urls):
+                if any("file_path" in f for f in file_urls):
+                    store_file_storage_urls(job_id, file_urls)
+                elif any("storage_url" in f for f in file_urls):
+                    # Legacy format with storage_url - still supported
                     store_file_storage_urls(job_id, file_urls)
                 else:
                     store_file_data(job_id, file_urls)
@@ -867,13 +871,14 @@ async def analyze_multiple_async(
         file_size = len(file_bytes)
         
         # Upload file to Supabase Storage
-        storage_url = upload_file_to_storage(job_id, file.filename, file_bytes)
+        # Returns file_path (e.g., "job_id/filename"), not public URL
+        file_path = upload_file_to_storage(job_id, file.filename, file_bytes)
         
-        if storage_url:
-            # Store storage URL
+        if file_path:
+            # Store file path (not public URL)
             file_urls.append({
                 "filename": file.filename,
-                "storage_url": storage_url,  # Supabase Storage public URL
+                "file_path": file_path,  # File path format: "job_id/filename"
                 "suffix": Path(file.filename).suffix,
                 "size": file_size
             })
@@ -897,10 +902,13 @@ async def analyze_multiple_async(
     if not file_urls:
         raise HTTPException(status_code=500, detail="Failed to process files. No file data to store.")
     
-    # Store file storage URLs in Supabase (preferred) or file paths (fallback)
+    # Store file paths in Supabase (preferred) or file paths (fallback)
     try:
-        if any("storage_url" in f for f in file_urls):
-            # Use new storage URLs format
+        if any("file_path" in f for f in file_urls):
+            # Use new file_path format
+            store_file_storage_urls(job_id, file_urls)
+        elif any("storage_url" in f for f in file_urls):
+            # Legacy format with storage_url - still supported
             store_file_storage_urls(job_id, file_urls)
         else:
             # Fallback to old file_data format
