@@ -304,7 +304,7 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
             try:
                 response = supabase.table("inbox_jobs")\
                     .select("*")\
-                    .eq("status", JobStatus.PENDING)\
+                    .eq("status", JobStatus.READY)\
                     .order("created_at", desc=False)\
                     .limit(limit)\
                     .execute()
@@ -760,9 +760,10 @@ def reset_failed_job(job_id: str) -> bool:
             logger.warning(f"Job {job_id} is not in failed status (current: {job.get('status')})")
             return False
         
-        # Reset to pending
+        # Reset to READY so a worker can pick it up again
+        # (Only do this if inputs already exist; API uses CREATED -> READY gating.)
         update_data = {
-            "status": JobStatus.PENDING,
+            "status": JobStatus.READY,
             "error": None,  # Clear error
             "progress": 0,  # Reset progress
             "processed_files": 0,  # Reset processed files
