@@ -705,10 +705,19 @@ if __name__ == "__main__":
         supabase_url = os.getenv("SUPABASE_URL")
         supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
+
+        # Non-secret diagnostic: Supabase project ref (helps confirm API + worker point to same project)
+        project_ref = None
+        if supabase_url and "://" in supabase_url and ".supabase.co" in supabase_url:
+            try:
+                project_ref = supabase_url.split("://", 1)[1].split(".supabase.co", 1)[0]
+            except Exception:
+                project_ref = None
         
         print(f"SUPABASE_URL: {'SET' if supabase_url else 'NOT SET'}", flush=True)
         print(f"SUPABASE_SERVICE_ROLE_KEY: {'SET' if supabase_key else 'NOT SET'}", flush=True)
         print(f"OPENAI_API_KEY: {'SET' if openai_key else 'NOT SET'}", flush=True)
+        print(f"SUPABASE_PROJECT_REF: {project_ref or 'unknown'}", flush=True)
         print("=" * 80, flush=True)
         
         # Run worker loop
