@@ -96,16 +96,29 @@ async def process_classify_job(job: Dict):
         
         # Get file data from job
         print(f"Getting file data for job {job_id}...", flush=True)
+        print(f"Job passed to function - file_storage_urls in job dict: {'file_storage_urls' in job}", flush=True)
+        if 'file_storage_urls' in job:
+            print(f"Job file_storage_urls type: {type(job.get('file_storage_urls'))}, value: {str(job.get('file_storage_urls'))[:200] if job.get('file_storage_urls') else 'None'}", flush=True)
+        
+        # IMPORTANT: Always call get_file_data() which fetches fresh data from database
+        # Don't rely on job dict passed to function - it might be stale
         file_data = get_file_data(job_id)
         print(f"File data result type: {type(file_data)}, length: {len(file_data) if file_data else 0}", flush=True)
         if file_data:
-            print(f"First file info: {file_data[0] if file_data else 'None'}", flush=True)
+            print(f"SUCCESS: Got file data, first file: {file_data[0].get('filename') if file_data else 'None'}", flush=True)
         if not file_data:
             print(f"ERROR: No file data found for job {job_id}", flush=True)
             # Log the full job data for debugging
             print(f"Full job data keys: {list(job.keys())}", flush=True)
             print(f"Job file_storage_urls: {job.get('file_storage_urls')}", flush=True)
             print(f"Job file_data: {job.get('file_data')}", flush=True)
+            # Try to get fresh data directly
+            print(f"Attempting to get fresh job data from database...", flush=True)
+            from job_service import get_job
+            fresh_job = get_job(job_id)
+            if fresh_job:
+                print(f"Fresh job file_storage_urls: {fresh_job.get('file_storage_urls')}", flush=True)
+                print(f"Fresh job file_storage_urls type: {type(fresh_job.get('file_storage_urls'))}", flush=True)
             raise ValueError("No file data found for job")
         
         print(f"Found {len(file_data)} files for job {job_id}", flush=True)

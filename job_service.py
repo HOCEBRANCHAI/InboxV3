@@ -153,8 +153,10 @@ def get_job(job_id: str, user_id: Optional[str] = None) -> Optional[Dict]:
                 except:
                     pass
             # Debug: Log what we got
+            print(f"get_job: Retrieved job {job_id}, file_storage_urls present: {'file_storage_urls' in job}, type: {type(job.get('file_storage_urls'))}", flush=True)
             logger.debug(f"Retrieved job {job_id}, keys: {list(job.keys())}, file_storage_urls present: {'file_storage_urls' in job}")
             return job
+        print(f"get_job: Job {job_id} not found in database", flush=True)
         return None
         
     except Exception as e:
