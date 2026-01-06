@@ -23,6 +23,7 @@ class JobStatus(str, Enum):
 # Initialize Supabase client
 supabase_url = os.getenv("SUPABASE_URL")
 supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")  # Use service role key for server-side operations
+supabase_storage_url = os.getenv("SUPABASE_STORAGE_URL")  # Optional: for signed URLs
 
 if not supabase_url or not supabase_key:
     logger.warning("Supabase credentials not found. Jobs will not be persisted.")
@@ -32,6 +33,22 @@ else:
         # Supabase client initialization (positional arguments)
         supabase = create_client(supabase_url, supabase_key)
         logger.info("Supabase client initialized successfully")
+        
+        # Set storage URL if provided (ensures trailing slash for signed URLs)
+        if supabase_storage_url:
+            # Ensure trailing slash
+            if not supabase_storage_url.endswith("/"):
+                supabase_storage_url = supabase_storage_url + "/"
+            logger.info(f"Supabase storage URL configured: {supabase_storage_url}")
+        else:
+            # Auto-detect from supabase_url if not provided
+            if supabase_url:
+                # Extract project ID and construct storage URL
+                # Format: https://<project-id>.supabase.co
+                if ".supabase.co" in supabase_url:
+                    base_url = supabase_url.rstrip("/")
+                    supabase_storage_url = f"{base_url}/storage/v1/"
+                    logger.info(f"Auto-detected storage URL: {supabase_storage_url}")
     except Exception as e:
         logger.error(f"Failed to initialize Supabase client: {e}")
         logger.error(f"Supabase URL: {supabase_url[:30]}..." if supabase_url else "No URL")
@@ -331,16 +348,12 @@ def store_file_data(job_id: str, file_data: List[Dict]):
 def get_file_data(job_id: str) -> Optional[List[Dict]]:
     """
     Retrieve file data for a job from Supabase.
-    Checks in order:
-    1. file_urls (simple TEXT[] array) - NEW, SIMPLEST (contains file paths)
-    2. file_storage_urls (full metadata JSONB) - for compatibility
-    3. file_data (old format) - backward compatibility
+    Simplified version that checks:
+    1. file_storage_urls (full metadata JSONB) - preferred
+    2. file_urls (simple TEXT[] array) - fallback
     
     Returns:
-        List of file dictionaries with:
-        - New format: {filename, file_path, suffix, size}
-          Note: file_path is "job_id/filename" format (not public URL)
-        - Old format: {filename, file_path, suffix, size} (local filesystem)
+        List of file dictionaries with {filename, file_path, suffix, size}
     """
     if not supabase:
         logger.warning("Supabase not configured. Cannot get file data.")
@@ -352,155 +365,61 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
             logger.warning(f"Job {job_id} not found in database")
             return None
         
-        # Debug: Log what columns are available
-        print(f"Job {job_id} - Available columns: {list(job.keys())}", flush=True)
-        logger.info(f"Job {job_id} - Available columns: {list(job.keys())}")
+        # Preferred: full metadata
+        file_storage_urls = job.get("file_storage_urls")
+        if file_storage_urls:
+            # Handle both list and string formats
+            if isinstance(file_storage_urls, str):
+                try:
+                    file_storage_urls = json.loads(file_storage_urls)
+                except json.JSONDecodeError:
+                    logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}")
+                    file_storage_urls = None
+            
+            if isinstance(file_storage_urls, list) and len(file_storage_urls) > 0:
+                print(f"SUCCESS: Found file_storage_urls for job {job_id} ({len(file_storage_urls)} files)", flush=True)
+                logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_storage_urls)} files)")
+                return file_storage_urls
         
-        # PRIORITY 1: Check for simple file_urls array (NEW, SIMPLEST)
-        # Note: file_urls now contains file paths (e.g., "job_id/filename"), not public URLs
-        file_urls_simple = job.get("file_urls")
-        if file_urls_simple and isinstance(file_urls_simple, list) and len(file_urls_simple) > 0:
-            print(f"SUCCESS: Found simple file_urls array with {len(file_urls_simple)} file paths", flush=True)
+        # Fallback: simple list of paths
+        file_urls = job.get("file_urls")
+        if file_urls and isinstance(file_urls, list) and len(file_urls) > 0:
+            print(f"SUCCESS: Found file_urls for job {job_id} ({len(file_urls)} files), converting to full format", flush=True)
             # Convert simple file paths to full format
             file_data = []
-            for file_path in file_urls_simple:
+            for file_path in file_urls:
                 if file_path:
-                    # Extract filename from path (format: "job_id/filename")
-                    filename = file_path.split("/")[-1] if "/" in file_path else file_path
-                    # Extract suffix
-                    suffix = Path(filename).suffix if filename else ""
+                    filename = Path(file_path).name if "/" in file_path else file_path
                     file_data.append({
                         "filename": filename,
-                        "file_path": file_path,  # Store file path (not URL)
-                        "suffix": suffix,
-                        "size": None  # Size not available in simple format
+                        "file_path": file_path,
+                        "suffix": Path(filename).suffix if filename else "",
+                        "size": None
                     })
             if file_data:
-                print(f"SUCCESS: Converted {len(file_data)} file paths to file data format", flush=True)
                 logger.info(f"Retrieved file paths for job {job_id} using simple format ({len(file_data)} files)")
                 return file_data
         
-        # PRIORITY 2: Check for file_storage_urls (full metadata)
-        file_storage_urls = job.get("file_storage_urls")
-        print(f"get_file_data: Checking file_storage_urls for job {job_id}", flush=True)
-        print(f"  - file_storage_urls is None: {file_storage_urls is None}", flush=True)
-        print(f"  - file_storage_urls == '': {file_storage_urls == ''}", flush=True)
-        print(f"  - file_storage_urls == []: {file_storage_urls == []}", flush=True)
-        print(f"  - file_storage_urls type: {type(file_storage_urls)}", flush=True)
-        if file_storage_urls is not None:
-            print(f"  - file_storage_urls value (first 500 chars): {str(file_storage_urls)[:500]}", flush=True)
-        
-        # Also check if it's None, empty string, or empty list
-        if file_storage_urls is not None and file_storage_urls != "" and file_storage_urls != []:
-            # Handle different formats:
-            # 1. Already a list (JSONB returned as object) - ideal case
-            if isinstance(file_storage_urls, list):
-                print(f"SUCCESS: file_storage_urls is already a list for job {job_id} ({len(file_storage_urls)} files)", flush=True)
-                # Normalize: convert storage_url to file_path if needed
-                normalized_list = []
-                for item in file_storage_urls:
-                    if isinstance(item, dict):
-                        # Check if it has file_path or storage_url
-                        file_path = item.get("file_path")
-                        if not file_path:
-                            # Try to extract file_path from storage_url if present
-                            storage_url = item.get("storage_url")
-                            if storage_url and storage_url.startswith("http"):
-                                # Extract path from URL: https://.../object/public/bucket/path
-                                parts = storage_url.split("/object/public/inbox-files/")
-                                if len(parts) > 1:
-                                    file_path = parts[1]
-                                else:
-                                    file_path = storage_url  # Fallback: use URL as-is
-                            elif storage_url:
-                                file_path = storage_url  # Already a path
-                        
-                        # Create normalized item
-                        normalized_item = item.copy()
-                        if file_path:
-                            normalized_item["file_path"] = file_path
-                            # Remove storage_url if it was a public URL (we'll generate signed URLs in worker)
-                            if "storage_url" in normalized_item and normalized_item["storage_url"].startswith("http"):
-                                del normalized_item["storage_url"]
-                        normalized_list.append(normalized_item)
-                    else:
-                        normalized_list.append(item)
-                
-                logger.info(f"Retrieved file storage URLs for job {job_id} ({len(normalized_list)} files)")
-                return normalized_list
-            
-            # 2. String that needs parsing - SIMPLIFIED: just parse it directly
-            if isinstance(file_storage_urls, str):
-                print(f"Parsing JSON string for job {job_id}, length: {len(file_storage_urls)}", flush=True)
-                # SIMPLIFIED: Just parse the string directly - diagnostic shows it's valid JSON
-                try:
-                    parsed = json.loads(file_storage_urls)
-                    if isinstance(parsed, list):
-                        print(f"SUCCESS: Parsed file_storage_urls for job {job_id}, got {len(parsed)} items", flush=True)
-                        logger.info(f"Retrieved file storage URLs for job {job_id} ({len(parsed)} files)")
-                        return parsed
-                    else:
-                        print(f"ERROR: Parsed result is not a list: {type(parsed)}", flush=True)
-                        logger.error(f"file_storage_urls parsed but not a list for job {job_id}: {type(parsed)}")
-                        return None
-                except json.JSONDecodeError as e:
-                    print(f"ERROR: Failed to parse JSON: {e}", flush=True)
-                    print(f"Raw value (first 500 chars): {file_storage_urls[:500]}", flush=True)
-                    logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}: {e}")
-                    # Try fallback: handle double-encoded case
-                    try:
-                        # Remove outer quotes if present
-                        cleaned = file_storage_urls.strip()
-                        if cleaned.startswith('"') and cleaned.endswith('"'):
-                            cleaned = cleaned[1:-1]
-                        # Unescape
-                        cleaned = cleaned.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
-                        parsed = json.loads(cleaned)
-                        if isinstance(parsed, list):
-                            print(f"SUCCESS: Parsed after fallback cleaning for job {job_id}, got {len(parsed)} items", flush=True)
-                            return parsed
-                    except Exception as e2:
-                        print(f"FAILED: Fallback parsing also failed: {e2}", flush=True)
-                    return None
-        
         # Fallback to old format: file_data (local filesystem)
         file_data_old = job.get("file_data")
-        # Also check if it's None, empty string, or empty list
-        if file_data_old is not None and file_data_old != "" and file_data_old != []:
-            file_data = file_data_old
-            if isinstance(file_data, str):
+        if file_data_old:
+            if isinstance(file_data_old, str):
                 try:
-                    file_data = json.loads(file_data)
+                    file_data_old = json.loads(file_data_old)
                 except json.JSONDecodeError as e:
                     logger.error(f"Failed to parse file_data JSON for job {job_id}: {e}")
                     return None
-            elif not isinstance(file_data, list):
-                logger.error(f"file_data is not a list or JSON string for job {job_id}: {type(file_data)}")
-                return None
-            
-            logger.info(f"Retrieved file paths for job {job_id} ({len(file_data)} files)")
-            return file_data
+            if isinstance(file_data_old, list) and len(file_data_old) > 0:
+                logger.info(f"Retrieved file paths for job {job_id} using old format ({len(file_data_old)} files)")
+                return file_data_old
         
-        # Log detailed information for debugging
+        # Log error with details
         print(f"ERROR: No file data found for job {job_id}", flush=True)
-        print(f"  - file_urls_simple value: {file_urls_simple}", flush=True)
-        print(f"  - file_urls_simple type: {type(file_urls_simple)}", flush=True)
-        print(f"  - file_storage_urls value: {file_storage_urls}", flush=True)
-        print(f"  - file_storage_urls type: {type(file_storage_urls)}", flush=True)
-        print(f"  - file_storage_urls is None: {file_storage_urls is None}", flush=True)
-        print(f"  - file_storage_urls == '': {file_storage_urls == ''}", flush=True)
-        print(f"  - file_storage_urls == []: {file_storage_urls == []}", flush=True)
-        print(f"  - file_data (old) value: {file_data_old}", flush=True)
-        print(f"  - file_data (old) type: {type(file_data_old)}", flush=True)
+        print(f"  - file_storage_urls: {file_storage_urls} (type: {type(file_storage_urls)})", flush=True)
+        print(f"  - file_urls: {file_urls} (type: {type(file_urls)})", flush=True)
+        print(f"  - file_data: {file_data_old} (type: {type(file_data_old)})", flush=True)
         print(f"  - All job keys: {list(job.keys())}", flush=True)
-        print(f"  - Job status: {job.get('status')}", flush=True)
-        print(f"  - Job endpoint_type: {job.get('endpoint_type')}", flush=True)
-        print(f"  - Full job data: {job}", flush=True)
         logger.warning(f"No file data found for job {job_id}")
-        logger.warning(f"  - file_urls_simple: {file_urls_simple} (type: {type(file_urls_simple)})")
-        logger.warning(f"  - file_storage_urls: {file_storage_urls} (type: {type(file_storage_urls)})")
-        logger.warning(f"  - file_data: {file_data_old} (type: {type(file_data_old)})")
-        logger.warning(f"  - All job keys: {list(job.keys())}")
         return None
         
     except Exception as e:
