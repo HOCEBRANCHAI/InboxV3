@@ -35,6 +35,17 @@ else:
         # Supabase client initialization (positional arguments)
         supabase = create_client(supabase_url, supabase_key)
         logger.info("Supabase client initialized successfully")
+
+        # Helpful non-secret diagnostics: log project ref so we can confirm
+        # API and worker are pointing at the same Supabase project.
+        try:
+            # SUPABASE_URL format: https://<project-ref>.supabase.co
+            project_ref = None
+            if supabase_url and "://" in supabase_url and ".supabase.co" in supabase_url:
+                project_ref = supabase_url.split("://", 1)[1].split(".supabase.co", 1)[0]
+            logger.info(f"Supabase project ref: {project_ref or 'unknown'}")
+        except Exception:
+            pass
         
         # Set storage URL if provided (ensures trailing slash for signed URLs)
         if supabase_storage_url:
