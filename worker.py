@@ -123,16 +123,22 @@ async def process_classify_job(job: Dict, retry_count: int = 0, max_retries: int
         for attempt in range(max_file_data_retries + 1):
             try:
                 # IMPORTANT: Always call get_file_data() which fetches fresh data from database
+                print(f"  Attempt {attempt + 1}/{max_file_data_retries + 1}: Calling get_file_data({job_id})...", flush=True)
                 file_data = get_file_data(job_id)
+                print(f"  get_file_data returned: type={type(file_data)}, value={file_data}", flush=True)
                 if file_data and len(file_data) > 0:
-                    print(f"SUCCESS: Got file data on attempt {attempt + 1}", flush=True)
+                    print(f"SUCCESS: Got file data on attempt {attempt + 1}, {len(file_data)} files", flush=True)
+                    print(f"  First file: {file_data[0]}", flush=True)
                     break
                 # If no data but no exception, wait a bit (files might still be uploading)
                 if attempt < max_file_data_retries:
                     wait_time = 2  # Wait 2 seconds between attempts
-                    print(f"  No file data yet, waiting {wait_time} seconds (attempt {attempt + 1}/{max_file_data_retries + 1})...", flush=True)
+                    print(f"  No file data yet (got {file_data}), waiting {wait_time} seconds (attempt {attempt + 1}/{max_file_data_retries + 1})...", flush=True)
                     await asyncio.sleep(wait_time)
             except Exception as e:
+                print(f"  EXCEPTION in get_file_data: {type(e).__name__}: {e}", flush=True)
+                import traceback
+                print(f"  Traceback: {traceback.format_exc()}", flush=True)
                 if is_transient_error(e) and attempt < max_file_data_retries:
                     wait_time = 2  # Wait 2 seconds for transient errors too
                     print(f"  Transient error getting file data (attempt {attempt + 1}/{max_file_data_retries + 1}): {e}", flush=True)
@@ -146,7 +152,15 @@ async def process_classify_job(job: Dict, retry_count: int = 0, max_retries: int
         if file_data:
             print(f"SUCCESS: Got file data, first file: {file_data[0].get('filename') if file_data else 'None'}", flush=True)
         if not file_data:
-            print(f"ERROR: No file data found for job {job_id} after {max_retries + 1} attempts", flush=True)
+            print(f"ERROR: No file data found for job {job_id} after {max_file_data_retries + 1} attempts", flush=True)
+            # Get the job again to see what's actually in the database
+            from job_service import get_job
+            job_check = get_job(job_id)
+            if job_check:
+                print(f"  Job exists in database. Keys: {list(job_check.keys())}", flush=True)
+                print(f"  file_storage_urls: {job_check.get('file_storage_urls')}", flush=True)
+                print(f"  file_urls: {job_check.get('file_urls')}", flush=True)
+                print(f"  file_data: {job_check.get('file_data')}", flush=True)
             raise ValueError("No file data found for job")
         
         print(f"Found {len(file_data)} files for job {job_id}", flush=True)

@@ -483,6 +483,8 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         
         # Log detailed information for debugging
         print(f"ERROR: No file data found for job {job_id}", flush=True)
+        print(f"  - file_urls_simple value: {file_urls_simple}", flush=True)
+        print(f"  - file_urls_simple type: {type(file_urls_simple)}", flush=True)
         print(f"  - file_storage_urls value: {file_storage_urls}", flush=True)
         print(f"  - file_storage_urls type: {type(file_storage_urls)}", flush=True)
         print(f"  - file_storage_urls is None: {file_storage_urls is None}", flush=True)
@@ -493,7 +495,9 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         print(f"  - All job keys: {list(job.keys())}", flush=True)
         print(f"  - Job status: {job.get('status')}", flush=True)
         print(f"  - Job endpoint_type: {job.get('endpoint_type')}", flush=True)
+        print(f"  - Full job data: {job}", flush=True)
         logger.warning(f"No file data found for job {job_id}")
+        logger.warning(f"  - file_urls_simple: {file_urls_simple} (type: {type(file_urls_simple)})")
         logger.warning(f"  - file_storage_urls: {file_storage_urls} (type: {type(file_storage_urls)})")
         logger.warning(f"  - file_data: {file_data_old} (type: {type(file_data_old)})")
         logger.warning(f"  - All job keys: {list(job.keys())}")
