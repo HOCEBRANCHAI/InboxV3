@@ -501,12 +501,26 @@ async def worker_loop():
                 tasks = []
                 for job in pending_jobs[:3]:
                     endpoint_type = job.get("endpoint_type", "classify")
+                    job_id = job.get("id", "unknown")
+                    print(f"Dispatching job {job_id} (type: {endpoint_type})", flush=True)
                     if endpoint_type == "analyze":
                         tasks.append(process_analyze_job(job))
                     else:
                         tasks.append(process_classify_job(job))
                 
-                await asyncio.gather(*tasks, return_exceptions=True)
+                print(f"Processing {len(tasks)} job(s) concurrently...", flush=True)
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Check for exceptions in results
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        job_id = pending_jobs[i].get("id", "unknown") if i < len(pending_jobs) else "unknown"
+                        print(f"ERROR: Exception processing job {job_id}: {result}", flush=True)
+                        print(f"Exception type: {type(result)}", flush=True)
+                        import traceback
+                        print(f"Traceback: {traceback.format_exc()}", flush=True)
+                        logger.error(f"Exception processing job {job_id}: {result}")
+                        logger.error(traceback.format_exc())
             else:
                 # No jobs, wait before next poll
                 print(f"No pending jobs, waiting {poll_interval} seconds...", flush=True)
