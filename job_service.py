@@ -6,6 +6,7 @@ import logging
 from typing import Optional, Dict, List
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
