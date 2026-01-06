@@ -235,22 +235,46 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
                 print(f"  - Job {job.get('id')}: {job.get('endpoint_type')}, {job.get('total_files')} files, created: {job.get('created_at')}", flush=True)
         else:
             # Debug: Check if there are any jobs at all
-            all_jobs_response = supabase.table("inbox_jobs")\
-                .select("id,status,created_at")\
-                .order("created_at", desc=True)\
-                .limit(5)\
-                .execute()
-            all_jobs = all_jobs_response.data if all_jobs_response.data else []
-            if all_jobs:
-                print(f"DEBUG: No pending jobs, but found {len(all_jobs)} recent jobs with statuses:", flush=True)
-                for job in all_jobs:
-                    print(f"  - Job {job.get('id')}: status={job.get('status')}, created={job.get('created_at')}", flush=True)
+            try:
+                all_jobs_response = supabase.table("inbox_jobs")\
+                    .select("id,status,created_at")\
+                    .order("created_at", desc=True)\
+                    .limit(5)\
+                    .execute()
+                all_jobs = all_jobs_response.data if all_jobs_response.data else []
+                if all_jobs:
+                    print(f"DEBUG: No pending jobs, but found {len(all_jobs)} recent jobs with statuses:", flush=True)
+                    for job in all_jobs:
+                        print(f"  - Job {job.get('id')}: status={job.get('status')}, created={job.get('created_at')}", flush=True)
+            except Exception as debug_error:
+                print(f"DEBUG: Could not check recent jobs: {debug_error}", flush=True)
         
         return jobs
         
     except Exception as e:
-        print(f"ERROR getting pending jobs: {e}", flush=True)
+        error_msg = str(e)
+        print(f"ERROR getting pending jobs: {error_msg}", flush=True)
         logger.error(f"Error getting pending jobs from Supabase: {e}")
+        
+        # Check if it's a connection error - retry once
+        if "Network connection lost" in error_msg or "502" in error_msg or "gateway error" in error_msg.lower():
+            print("Retrying after connection error...", flush=True)
+            import time
+            time.sleep(2)  # Wait 2 seconds before retry
+            try:
+                response = supabase.table("inbox_jobs")\
+                    .select("*")\
+                    .eq("status", JobStatus.PENDING)\
+                    .order("created_at", desc=False)\
+                    .limit(limit)\
+                    .execute()
+                jobs = response.data if response.data else []
+                if jobs:
+                    print(f"Retry successful: Found {len(jobs)} pending job(s)", flush=True)
+                return jobs
+            except Exception as retry_error:
+                print(f"Retry also failed: {retry_error}", flush=True)
+        
         import traceback
         print(traceback.format_exc(), flush=True)
         return []
