@@ -290,6 +290,10 @@ async def process_classify_job(job: Dict):
         
     except Exception as e:
         error_msg = f"Job processing failed: {str(e)}"
+        print(f"EXCEPTION in process_classify_job for job {job_id}: {error_msg}", flush=True)
+        print(f"Exception type: {type(e).__name__}", flush=True)
+        print(f"Full traceback:", flush=True)
+        print(traceback.format_exc(), flush=True)
         logger.error(f"Job {job_id} failed: {error_msg}")
         logger.error(traceback.format_exc())
         update_job_status(job_id, JobStatus.FAILED, error=error_msg)
@@ -470,6 +474,10 @@ async def process_analyze_job(job: Dict):
         
     except Exception as e:
         error_msg = f"Job processing failed: {str(e)}"
+        print(f"EXCEPTION in process_analyze_job for job {job_id}: {error_msg}", flush=True)
+        print(f"Exception type: {type(e).__name__}", flush=True)
+        print(f"Full traceback:", flush=True)
+        print(traceback.format_exc(), flush=True)
         logger.error(f"Analyze job {job_id} failed: {error_msg}")
         logger.error(traceback.format_exc())
         update_job_status(job_id, JobStatus.FAILED, error=error_msg)
@@ -528,10 +536,18 @@ async def worker_loop():
                 for i, result in enumerate(results):
                     if isinstance(result, Exception):
                         job_id = pending_jobs[i].get("id", "unknown") if i < len(pending_jobs) else "unknown"
-                        print(f"ERROR: Exception processing job {job_id}: {result}", flush=True)
-                        print(f"Exception type: {type(result)}", flush=True)
+                        print(f"=" * 80, flush=True)
+                        print(f"EXCEPTION CAUGHT from asyncio.gather for job {job_id}", flush=True)
+                        print(f"Exception: {result}", flush=True)
+                        print(f"Exception type: {type(result).__name__}", flush=True)
                         import traceback
-                        print(f"Traceback: {traceback.format_exc()}", flush=True)
+                        # Get traceback from exception if available
+                        if hasattr(result, '__traceback__'):
+                            print(f"Traceback:", flush=True)
+                            print(''.join(traceback.format_exception(type(result), result, result.__traceback__)), flush=True)
+                        else:
+                            print(f"Traceback: {traceback.format_exc()}", flush=True)
+                        print(f"=" * 80, flush=True)
                         logger.error(f"Exception processing job {job_id}: {result}")
                         logger.error(traceback.format_exc())
             else:
