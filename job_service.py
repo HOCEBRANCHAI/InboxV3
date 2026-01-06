@@ -320,7 +320,10 @@ def store_file_data(job_id: str, file_data: List[Dict]):
 def get_file_data(job_id: str) -> Optional[List[Dict]]:
     """
     Retrieve file data for a job from Supabase.
-    Checks both file_storage_urls (new) and file_data (old) for backward compatibility.
+    Checks in order:
+    1. file_urls (simple TEXT[] array) - NEW, SIMPLEST
+    2. file_storage_urls (full metadata JSONB) - for compatibility
+    3. file_data (old format) - backward compatibility
     
     Returns:
         List of file dictionaries with:
@@ -337,17 +340,34 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
             logger.warning(f"Job {job_id} not found in database")
             return None
         
-        # Debug: Log what columns are available (use INFO level so it shows in logs)
+        # Debug: Log what columns are available
         print(f"Job {job_id} - Available columns: {list(job.keys())}", flush=True)
         logger.info(f"Job {job_id} - Available columns: {list(job.keys())}")
-        file_storage_urls_raw = job.get("file_storage_urls")
-        file_data_raw = job.get("file_data")
-        print(f"Job {job_id} - file_storage_urls type: {type(file_storage_urls_raw)}, value: {str(file_storage_urls_raw)[:500] if file_storage_urls_raw else 'None'}", flush=True)
-        print(f"Job {job_id} - file_data type: {type(file_data_raw)}, value: {str(file_data_raw)[:500] if file_data_raw else 'None'}", flush=True)
-        logger.info(f"Job {job_id} - file_storage_urls type: {type(file_storage_urls_raw)}, value: {str(file_storage_urls_raw)[:200] if file_storage_urls_raw else 'None'}...")
-        logger.info(f"Job {job_id} - file_data type: {type(file_data_raw)}, value: {str(file_data_raw)[:200] if file_data_raw else 'None'}...")
         
-        # Check for new format: file_storage_urls (Supabase Storage)
+        # PRIORITY 1: Check for simple file_urls array (NEW, SIMPLEST)
+        file_urls_simple = job.get("file_urls")
+        if file_urls_simple and isinstance(file_urls_simple, list) and len(file_urls_simple) > 0:
+            print(f"SUCCESS: Found simple file_urls array with {len(file_urls_simple)} URLs", flush=True)
+            # Convert simple URLs to full format
+            file_data = []
+            for url in file_urls_simple:
+                if url:
+                    # Extract filename from URL
+                    filename = url.split("/")[-1]
+                    # Extract suffix
+                    suffix = Path(filename).suffix if filename else ""
+                    file_data.append({
+                        "filename": filename,
+                        "storage_url": url,
+                        "suffix": suffix,
+                        "size": None  # Size not available in simple format
+                    })
+            if file_data:
+                print(f"SUCCESS: Converted {len(file_data)} URLs to file data format", flush=True)
+                logger.info(f"Retrieved file URLs for job {job_id} using simple format ({len(file_data)} files)")
+                return file_data
+        
+        # PRIORITY 2: Check for file_storage_urls (full metadata)
         file_storage_urls = job.get("file_storage_urls")
         # Also check if it's None, empty string, or empty list
         if file_storage_urls is not None and file_storage_urls != "" and file_storage_urls != []:
@@ -566,6 +586,9 @@ def download_file_from_storage(storage_url: str, bucket_name: str = "inbox-files
 def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
     """
     Store file storage URLs for a job in Supabase.
+    Stores both formats:
+    - file_storage_urls: Full metadata (JSONB) - for compatibility
+    - file_urls: Simple array of URLs (TEXT[]) - for easy worker access
     
     Args:
         job_id: Job ID
@@ -579,19 +602,16 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         return
     
     try:
-        # IMPORTANT: Supabase Python client stores JSONB incorrectly when passing Python objects
-        # We need to use a workaround: cast the value explicitly in the update
-        # However, the PostgREST API (which Supabase uses) should handle JSONB correctly
-        # Let's try passing it as a JSON string, which PostgREST will parse as JSONB
+        # Extract simple URLs array for easy worker access
+        simple_urls = [f.get("storage_url") for f in file_urls if f.get("storage_url")]
+        print(f"store_file_storage_urls: Extracted {len(simple_urls)} URLs for simple format", flush=True)
         
-        # FIX: Don't use json.dumps() - it causes double-encoding
-        # Supabase Python client will handle the list directly and convert to JSONB
-        # Passing json.dumps() causes it to be stored as: "[{\"filename\": ...}]" (double-encoded)
-        # Instead, pass the list directly: [{"filename": ...}] (correct)
+        # Store both formats: full metadata + simple URLs
         print(f"store_file_storage_urls: Storing {len(file_urls)} files directly as list (not JSON string)", flush=True)
         
         update_data = {
-            "file_storage_urls": file_urls,  # Pass list directly, NOT json.dumps()
+            "file_storage_urls": file_urls,  # Full metadata (JSONB) - for compatibility
+            "file_urls": simple_urls,        # Simple URLs array (TEXT[]) - for easy access
             "updated_at": datetime.utcnow().isoformat()
         }
         
