@@ -325,85 +325,46 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         file_storage_urls = job.get("file_storage_urls")
         # Also check if it's None, empty string, or empty list
         if file_storage_urls is not None and file_storage_urls != "" and file_storage_urls != []:
-            file_data = file_storage_urls
-            
             # Handle different formats:
             # 1. Already a list (JSONB returned as object) - ideal case
-            if isinstance(file_data, list):
-                print(f"SUCCESS: file_storage_urls is already a list for job {job_id} ({len(file_data)} files)", flush=True)
-                logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
-                return file_data
+            if isinstance(file_storage_urls, list):
+                print(f"SUCCESS: file_storage_urls is already a list for job {job_id} ({len(file_storage_urls)} files)", flush=True)
+                logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_storage_urls)} files)")
+                return file_storage_urls
             
-            # 2. String that needs parsing (might be double-encoded or escaped)
-            if isinstance(file_data, str):
-                print(f"Parsing JSON string for job {job_id}, length: {len(file_data)}", flush=True)
-                print(f"First 200 chars: {file_data[:200]}", flush=True)
+            # 2. String that needs parsing - SIMPLIFIED: just parse it directly
+            if isinstance(file_storage_urls, str):
+                print(f"Parsing JSON string for job {job_id}, length: {len(file_storage_urls)}", flush=True)
+                # SIMPLIFIED: Just parse the string directly - diagnostic shows it's valid JSON
                 try:
-                    # Remove any leading/trailing whitespace
-                    file_data_clean = file_data.strip()
-                    
-                    # Check if it's a JSON string wrapped in quotes (double-encoded)
-                    # Example: "\"[{\\\"size\\\": 4361368}]\""
-                    if file_data_clean.startswith('"') and file_data_clean.endswith('"'):
-                        # Remove outer quotes first
-                        file_data_clean = file_data_clean[1:-1]
-                        print(f"Removed outer quotes, new length: {len(file_data_clean)}", flush=True)
-                    
-                    # Unescape the string (handle \\" -> ")
-                    file_data_clean = file_data_clean.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
-                    print(f"After unescaping, first 200 chars: {file_data_clean[:200]}", flush=True)
-                    
-                    # First parse attempt
-                    parsed = json.loads(file_data_clean)
-                    print(f"First parse successful, type: {type(parsed)}", flush=True)
-                    
-                    # If result is still a string, parse again (double-encoded case)
-                    if isinstance(parsed, str):
-                        print(f"Result is still string, parsing again...", flush=True)
-                        # Try parsing again
-                        parsed = json.loads(parsed)
-                    
-                    file_data = parsed
-                    if isinstance(file_data, list):
-                        print(f"SUCCESS: Parsed file_storage_urls JSON string for job {job_id}, got {len(file_data)} items", flush=True)
-                        logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_data)} files)")
-                        return file_data
+                    parsed = json.loads(file_storage_urls)
+                    if isinstance(parsed, list):
+                        print(f"SUCCESS: Parsed file_storage_urls for job {job_id}, got {len(parsed)} items", flush=True)
+                        logger.info(f"Retrieved file storage URLs for job {job_id} ({len(parsed)} files)")
+                        return parsed
                     else:
-                        print(f"ERROR: Parsed result is not a list: {type(file_data)}", flush=True)
-                        raise ValueError(f"Parsed file_storage_urls is not a list: {type(file_data)}")
+                        print(f"ERROR: Parsed result is not a list: {type(parsed)}", flush=True)
+                        logger.error(f"file_storage_urls parsed but not a list for job {job_id}: {type(parsed)}")
+                        return None
                 except json.JSONDecodeError as e:
-                    print(f"JSON decode error: {e}", flush=True)
+                    print(f"ERROR: Failed to parse JSON: {e}", flush=True)
+                    print(f"Raw value (first 500 chars): {file_storage_urls[:500]}", flush=True)
                     logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}: {e}")
-                    logger.error(f"Raw value (first 500 chars): {str(file_storage_urls)[:500]}")
-                    # Try one more time with different approach
+                    # Try fallback: handle double-encoded case
                     try:
-                        # Sometimes the string has extra escaping
-                        # Try removing all escape sequences
-                        cleaned = file_data.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
-                        # Remove any outer quotes
-                        while cleaned.startswith('"') and cleaned.endswith('"'):
+                        # Remove outer quotes if present
+                        cleaned = file_storage_urls.strip()
+                        if cleaned.startswith('"') and cleaned.endswith('"'):
                             cleaned = cleaned[1:-1]
+                        # Unescape
+                        cleaned = cleaned.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
                         parsed = json.loads(cleaned)
                         if isinstance(parsed, list):
-                            print(f"SUCCESS: Parsed after aggressive cleaning for job {job_id}, got {len(parsed)} items", flush=True)
-                            logger.info(f"Retrieved file storage URLs for job {job_id} ({len(parsed)} files)")
+                            print(f"SUCCESS: Parsed after fallback cleaning for job {job_id}, got {len(parsed)} items", flush=True)
                             return parsed
-                        else:
-                            print(f"ERROR: Parsed result is not a list after cleaning: {type(parsed)}", flush=True)
-                            raise ValueError(f"Parsed file_storage_urls is not a list: {type(parsed)}")
                     except Exception as e2:
-                        print(f"FAILED: Could not parse even after aggressive cleaning: {e2}", flush=True)
-                        logger.error(f"Failed to parse even after aggressive cleaning: {e2}")
-                        print(f"Final attempt - trying to parse raw string as-is...", flush=True)
-                        # Last attempt: try parsing the original string directly
-                        try:
-                            final_parsed = json.loads(file_storage_urls)
-                            if isinstance(final_parsed, list):
-                                print(f"SUCCESS: Direct parse of original string worked! Got {len(final_parsed)} items", flush=True)
-                                return final_parsed
-                        except:
-                            pass
-                        return None
+                        print(f"FAILED: Fallback parsing also failed: {e2}", flush=True)
+                    return None
         
         # Fallback to old format: file_data (local filesystem)
         file_data_old = job.get("file_data")
