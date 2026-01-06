@@ -119,7 +119,9 @@ def update_job_status(job_id: str, status: JobStatus, result: Optional[Dict] = N
         }
         
         if result is not None:
-            update_data["result"] = json.dumps(result) if isinstance(result, dict) else result
+            # Always serialize result to JSON string for consistency
+            # This ensures dict, list, str, etc. are all stored consistently
+            update_data["result"] = json.dumps(result)
         
         if error is not None:
             update_data["error"] = error
@@ -174,16 +176,16 @@ def get_job(job_id: str, user_id: Optional[str] = None) -> Optional[Dict]:
             # Debug: Log what we got with more detail
             file_storage_urls = job.get("file_storage_urls")
             file_urls = job.get("file_urls")
-            print(f"get_job: Retrieved job {job_id}", flush=True)
-            print(f"  - file_storage_urls present: {'file_storage_urls' in job}", flush=True)
-            print(f"  - file_storage_urls type: {type(file_storage_urls)}", flush=True)
-            print(f"  - file_storage_urls value: {str(file_storage_urls)[:200] if file_storage_urls else 'None'}", flush=True)
-            print(f"  - file_urls present: {'file_urls' in job}", flush=True)
-            print(f"  - file_urls type: {type(file_urls)}", flush=True)
-            print(f"  - file_urls value: {file_urls}", flush=True)
+            logger.debug(f"get_job: Retrieved job {job_id}")
+            logger.debug(f"  - file_storage_urls present: {'file_storage_urls' in job}")
+            logger.debug(f"  - file_storage_urls type: {type(file_storage_urls)}")
+            logger.debug(f"  - file_storage_urls value: {str(file_storage_urls)[:200] if file_storage_urls else 'None'}")
+            logger.debug(f"  - file_urls present: {'file_urls' in job}")
+            logger.debug(f"  - file_urls type: {type(file_urls)}")
+            logger.debug(f"  - file_urls value: {file_urls}")
             logger.debug(f"Retrieved job {job_id}, keys: {list(job.keys())}, file_storage_urls present: {'file_storage_urls' in job}")
             return job
-        print(f"get_job: Job {job_id} not found in database", flush=True)
+        logger.debug(f"get_job: Job {job_id} not found in database")
         return None
         
     except Exception as e:
@@ -259,9 +261,9 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
         
         jobs = response.data if response.data else []
         if jobs:
-            print(f"Found {len(jobs)} pending job(s) in database", flush=True)
+            logger.debug(f"Found {len(jobs)} pending job(s) in database")
             for job in jobs:
-                print(f"  - Job {job.get('id')}: {job.get('endpoint_type')}, {job.get('total_files')} files, created: {job.get('created_at')}", flush=True)
+                logger.debug(f"  - Job {job.get('id')}: {job.get('endpoint_type')}, {job.get('total_files')} files, created: {job.get('created_at')}")
         else:
             # Debug: Check if there are any jobs at all
             try:
@@ -272,22 +274,22 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
                     .execute()
                 all_jobs = all_jobs_response.data if all_jobs_response.data else []
                 if all_jobs:
-                    print(f"DEBUG: No pending jobs, but found {len(all_jobs)} recent jobs with statuses:", flush=True)
+                    logger.debug(f"DEBUG: No pending jobs, but found {len(all_jobs)} recent jobs with statuses:")
                     for job in all_jobs:
-                        print(f"  - Job {job.get('id')}: status={job.get('status')}, created={job.get('created_at')}", flush=True)
+                        logger.debug(f"  - Job {job.get('id')}: status={job.get('status')}, created={job.get('created_at')}")
             except Exception as debug_error:
-                print(f"DEBUG: Could not check recent jobs: {debug_error}", flush=True)
+                logger.debug(f"DEBUG: Could not check recent jobs: {debug_error}")
         
         return jobs
         
     except Exception as e:
         error_msg = str(e)
-        print(f"ERROR getting pending jobs: {error_msg}", flush=True)
+        logger.error(f"ERROR getting pending jobs: {error_msg}")
         logger.error(f"Error getting pending jobs from Supabase: {e}")
         
         # Check if it's a connection error - retry once
         if "Network connection lost" in error_msg or "502" in error_msg or "gateway error" in error_msg.lower():
-            print("Retrying after connection error...", flush=True)
+            logger.debug("Retrying after connection error...")
             import time
             time.sleep(2)  # Wait 2 seconds before retry
             try:
@@ -299,13 +301,13 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
                     .execute()
                 jobs = response.data if response.data else []
                 if jobs:
-                    print(f"Retry successful: Found {len(jobs)} pending job(s)", flush=True)
+                    logger.debug(f"Retry successful: Found {len(jobs)} pending job(s)")
                 return jobs
             except Exception as retry_error:
-                print(f"Retry also failed: {retry_error}", flush=True)
+                logger.debug(f"Retry also failed: {retry_error}")
         
         import traceback
-        print(traceback.format_exc(), flush=True)
+        logger.debug(traceback.format_exc())
         return []
 
 def store_file_data(job_id: str, file_data: List[Dict]):
@@ -368,24 +370,42 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
         
         # Preferred: full metadata
         file_storage_urls = job.get("file_storage_urls")
-        if file_storage_urls:
-            # Handle both list and string formats
+        if file_storage_urls is not None and file_storage_urls != "":
+            # CRITICAL: Handle both list and string formats
+            # Postgres may store JSONB as TEXT (string) instead of parsed JSON
             if isinstance(file_storage_urls, str):
                 try:
+                    # Parse JSON string - handles both single and double-encoded cases
                     file_storage_urls = json.loads(file_storage_urls)
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}")
-                    file_storage_urls = None
+                    logger.debug(f"Parsed file_storage_urls from JSON string for job {job_id}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse file_storage_urls JSON for job {job_id}: {e}")
+                    logger.error(f"Raw value (first 500 chars): {file_storage_urls[:500]}")
+                    # Try handling double-encoded case (escaped quotes)
+                    try:
+                        # Remove outer quotes if present and unescape
+                        cleaned = file_storage_urls.strip()
+                        if cleaned.startswith('"') and cleaned.endswith('"'):
+                            cleaned = cleaned[1:-1]
+                        cleaned = cleaned.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
+                        file_storage_urls = json.loads(cleaned)
+                        logger.debug(f"Successfully parsed after cleaning double-encoded JSON for job {job_id}")
+                    except Exception as e2:
+                        logger.error(f"Failed to parse even after cleaning: {e2}")
+                        file_storage_urls = None
             
+            # After parsing (or if already a list), check if it's valid
             if isinstance(file_storage_urls, list) and len(file_storage_urls) > 0:
-                print(f"SUCCESS: Found file_storage_urls for job {job_id} ({len(file_storage_urls)} files)", flush=True)
+                logger.debug(f"SUCCESS: Found file_storage_urls for job {job_id} ({len(file_storage_urls)} files)")
                 logger.info(f"Retrieved file storage URLs for job {job_id} ({len(file_storage_urls)} files)")
                 return file_storage_urls
+            elif file_storage_urls is not None:
+                logger.warning(f"file_storage_urls for job {job_id} is not a list or is empty: {type(file_storage_urls)}")
         
         # Fallback: simple list of paths
         file_urls = job.get("file_urls")
         if file_urls and isinstance(file_urls, list) and len(file_urls) > 0:
-            print(f"SUCCESS: Found file_urls for job {job_id} ({len(file_urls)} files), converting to full format", flush=True)
+            logger.debug(f"SUCCESS: Found file_urls for job {job_id} ({len(file_urls)} files), converting to full format")
             # Convert simple file paths to full format
             file_data = []
             for file_path in file_urls:
@@ -415,11 +435,11 @@ def get_file_data(job_id: str) -> Optional[List[Dict]]:
                 return file_data_old
         
         # Log error with details
-        print(f"ERROR: No file data found for job {job_id}", flush=True)
-        print(f"  - file_storage_urls: {file_storage_urls} (type: {type(file_storage_urls)})", flush=True)
-        print(f"  - file_urls: {file_urls} (type: {type(file_urls)})", flush=True)
-        print(f"  - file_data: {file_data_old} (type: {type(file_data_old)})", flush=True)
-        print(f"  - All job keys: {list(job.keys())}", flush=True)
+        logger.warning(f"ERROR: No file data found for job {job_id}")
+        logger.debug(f"  - file_storage_urls: {file_storage_urls} (type: {type(file_storage_urls)})")
+        logger.debug(f"  - file_urls: {file_urls} (type: {type(file_urls)})")
+        logger.debug(f"  - file_data: {file_data_old} (type: {type(file_data_old)})")
+        logger.debug(f"  - All job keys: {list(job.keys())}")
         logger.warning(f"No file data found for job {job_id}")
         return None
         
@@ -477,33 +497,33 @@ def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket
             logger.info(f"Sanitized filename: '{filename}' -> '{sanitized_filename}'")
         
         # Upload file to Supabase Storage
-        print(f"upload_file_to_storage: Uploading {filename} to {storage_path}...", flush=True)
+        logger.debug(f"upload_file_to_storage: Uploading {filename} to {storage_path}...")
         try:
             response = supabase.storage.from_(bucket_name).upload(
                 path=storage_path,
                 file=file_bytes,
                 file_options={"content-type": "application/octet-stream", "upsert": "true"}
             )
-            print(f"upload_file_to_storage: Upload response: {response}", flush=True)
+            logger.debug(f"upload_file_to_storage: Upload response: {response}")
         except Exception as upload_error:
-            print(f"ERROR: Upload failed: {upload_error}", flush=True)
+            logger.error(f"ERROR: Upload failed: {upload_error}")
             import traceback
-            print(traceback.format_exc(), flush=True)
+            logger.debug(traceback.format_exc())
             logger.error(f"Failed to upload {filename} to Supabase Storage: {upload_error}")
             return None
         
         # Verify file exists by trying to list it
         try:
             # Verify file exists (list the folder to check)
-            print(f"upload_file_to_storage: Verifying file in storage...", flush=True)
+            logger.debug(f"upload_file_to_storage: Verifying file in storage...")
             # Note: We don't need to get public URL anymore - we store file_path
-            print(f"upload_file_to_storage: File verified in storage", flush=True)
+            logger.debug(f"upload_file_to_storage: File verified in storage")
         except Exception as verify_error:
-            print(f"WARNING: Could not verify file in storage: {verify_error}", flush=True)
+            logger.warning(f"WARNING: Could not verify file in storage: {verify_error}")
         
         # Return file path (not public URL) - format: "job_id/filename"
         logger.info(f"Uploaded file {filename} to Supabase Storage: {storage_path}")
-        print(f"upload_file_to_storage: Returning file_path: {storage_path}", flush=True)
+        logger.debug(f"upload_file_to_storage: Returning file_path: {storage_path}")
         return storage_path
         
     except Exception as e:
@@ -605,10 +625,10 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         file_urls: List of file dictionaries with {filename, file_path, suffix, size}
                    Note: file_path format is "job_id/filename" (not public URL)
     """
-    print(f"store_file_storage_urls: Starting for job {job_id} with {len(file_urls)} files", flush=True)
+    logger.debug(f"store_file_storage_urls: Starting for job {job_id} with {len(file_urls)} files")
     
     if not supabase:
-        print(f"ERROR: Supabase not configured. Cannot store file paths for job {job_id}", flush=True)
+        logger.error(f"ERROR: Supabase not configured. Cannot store file paths for job {job_id}")
         logger.warning("Supabase not configured. Cannot store file paths.")
         return
     
@@ -629,10 +649,10 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
                         continue
                 simple_paths.append(file_path)
         
-        print(f"store_file_storage_urls: Extracted {len(simple_paths)} file paths for simple format", flush=True)
+        logger.debug(f"store_file_storage_urls: Extracted {len(simple_paths)} file paths for simple format")
         
         # Store both formats: full metadata + simple paths
-        print(f"store_file_storage_urls: Storing {len(file_urls)} files directly as list (not JSON string)", flush=True)
+        logger.debug(f"store_file_storage_urls: Storing {len(file_urls)} files directly as list (not JSON string)")
         
         update_data = {
             "file_storage_urls": file_urls,  # Full metadata (JSONB) - for compatibility
@@ -640,36 +660,36 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
             "updated_at": datetime.utcnow().isoformat()
         }
         
-        print(f"store_file_storage_urls: Updating database for job {job_id}...", flush=True)
+        logger.debug(f"store_file_storage_urls: Updating database for job {job_id}...")
         result = supabase.table("inbox_jobs").update(update_data).eq("id", job_id).execute()
-        print(f"store_file_storage_urls: Database update completed for job {job_id}", flush=True)
+        logger.debug(f"store_file_storage_urls: Database update completed for job {job_id}")
         
         # Verify it was stored correctly by reading it back
-        print(f"store_file_storage_urls: Verifying storage for job {job_id}...", flush=True)
+        logger.debug(f"store_file_storage_urls: Verifying storage for job {job_id}...")
         verify_job = get_job(job_id)
         if verify_job:
             stored_value = verify_job.get("file_storage_urls")
-            print(f"store_file_storage_urls: Retrieved value type: {type(stored_value)}, is None: {stored_value is None}", flush=True)
+            logger.debug(f"store_file_storage_urls: Retrieved value type: {type(stored_value)}, is None: {stored_value is None}")
             if stored_value is not None:
-                print(f"store_file_storage_urls: Stored value length: {len(str(stored_value))}", flush=True)
-                print(f"store_file_storage_urls: First 200 chars: {str(stored_value)[:200]}", flush=True)
+                logger.debug(f"store_file_storage_urls: Stored value length: {len(str(stored_value))}")
+                logger.debug(f"store_file_storage_urls: First 200 chars: {str(stored_value)[:200]}")
             if isinstance(stored_value, str) and stored_value.startswith('"'):
                 # Still stored as string, try alternative method
-                print(f"WARNING: Value still stored as string for job {job_id}", flush=True)
+                logger.warning(f"WARNING: Value still stored as string for job {job_id}")
                 logger.warning(f"Value still stored as string for job {job_id}, trying alternative method")
                 # Use raw SQL via RPC (if available) or direct SQL
                 # For now, the parsing code should handle the string format
                 pass
         else:
-            print(f"ERROR: Could not verify job {job_id} after storage", flush=True)
+            logger.error(f"ERROR: Could not verify job {job_id} after storage")
         
-        print(f"SUCCESS: Stored file storage URLs for job {job_id} ({len(file_urls)} files)", flush=True)
+        logger.debug(f"SUCCESS: Stored file storage URLs for job {job_id} ({len(file_urls)} files)")
         logger.info(f"Stored file storage URLs for job {job_id} ({len(file_urls)} files)")
         
     except Exception as e:
-        print(f"ERROR: Exception storing file storage URLs for job {job_id}: {e}", flush=True)
+        logger.error(f"ERROR: Exception storing file storage URLs for job {job_id}: {e}")
         import traceback
-        print(traceback.format_exc(), flush=True)
+        logger.debug(traceback.format_exc())
         logger.error(f"Error storing file storage URLs for job {job_id}: {e}")
         logger.error(traceback.format_exc())
         raise
@@ -747,18 +767,32 @@ def delete_job(job_id: str) -> bool:
                 
                 bucket_name = "inbox-files"
                 for file_info in file_urls:
-                    storage_url = file_info.get("storage_url")
-                    if storage_url:
-                        # Extract storage path from URL
-                        if storage_url.startswith("http"):
-                            parts = storage_url.split(f"/object/public/{bucket_name}/")
-                            if len(parts) > 1:
-                                storage_path = parts[1]
-                                try:
-                                    supabase.storage.from_(bucket_name).remove([storage_path])
-                                    logger.info(f"Deleted file from storage: {storage_path}")
-                                except Exception as e:
-                                    logger.warning(f"Failed to delete file from storage: {e}")
+                    # Priority 1: Use file_path (new format)
+                    storage_path = file_info.get("file_path")
+                    
+                    # Priority 2: Extract from storage_url (legacy format)
+                    if not storage_path:
+                        storage_url = file_info.get("storage_url")
+                        if storage_url:
+                            # Extract storage path from URL
+                            if storage_url.startswith("http"):
+                                parts = storage_url.split(f"/object/public/{bucket_name}/")
+                                if len(parts) > 1:
+                                    storage_path = parts[1]
+                                else:
+                                    # Fallback: try to extract from any URL format
+                                    if f"/{bucket_name}/" in storage_url:
+                                        storage_path = storage_url.split(f"/{bucket_name}/")[-1]
+                            else:
+                                # Already a path, not a URL
+                                storage_path = storage_url
+                    
+                    if storage_path:
+                        try:
+                            supabase.storage.from_(bucket_name).remove([storage_path])
+                            logger.info(f"Deleted file from storage: {storage_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete file from storage {storage_path}: {e}")
         except Exception as storage_cleanup_error:
             logger.warning(f"Failed to clean up storage files for job {job_id}: {storage_cleanup_error}")
         
