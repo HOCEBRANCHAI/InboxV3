@@ -558,14 +558,14 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         # However, the PostgREST API (which Supabase uses) should handle JSONB correctly
         # Let's try passing it as a JSON string, which PostgREST will parse as JSONB
         
-        # Method 1: Try passing as JSON string (PostgREST should parse it as JSONB)
-        json_string = json.dumps(file_urls)
-        print(f"store_file_storage_urls: Created JSON string, length: {len(json_string)}", flush=True)
+        # FIX: Don't use json.dumps() - it causes double-encoding
+        # Supabase Python client will handle the list directly and convert to JSONB
+        # Passing json.dumps() causes it to be stored as: "[{\"filename\": ...}]" (double-encoded)
+        # Instead, pass the list directly: [{"filename": ...}] (correct)
+        print(f"store_file_storage_urls: Storing {len(file_urls)} files directly as list (not JSON string)", flush=True)
         
-        # Use the PostgREST format for JSONB: pass as string, PostgREST will cast it
-        # According to PostgREST docs, JSON strings are automatically cast to JSONB
         update_data = {
-            "file_storage_urls": json_string,  # Pass as JSON string
+            "file_storage_urls": file_urls,  # Pass list directly, NOT json.dumps()
             "updated_at": datetime.utcnow().isoformat()
         }
         
