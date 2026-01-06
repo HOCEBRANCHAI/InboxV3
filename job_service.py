@@ -562,7 +562,10 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         job_id: Job ID
         file_urls: List of file dictionaries with {filename, storage_url, suffix, size}
     """
+    print(f"store_file_storage_urls: Starting for job {job_id} with {len(file_urls)} files", flush=True)
+    
     if not supabase:
+        print(f"ERROR: Supabase not configured. Cannot store file storage URLs for job {job_id}", flush=True)
         logger.warning("Supabase not configured. Cannot store file storage URLs.")
         return
     
@@ -574,6 +577,7 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
         
         # Method 1: Try passing as JSON string (PostgREST should parse it as JSONB)
         json_string = json.dumps(file_urls)
+        print(f"store_file_storage_urls: Created JSON string, length: {len(json_string)}", flush=True)
         
         # Use the PostgREST format for JSONB: pass as string, PostgREST will cast it
         # According to PostgREST docs, JSON strings are automatically cast to JSONB
@@ -582,24 +586,37 @@ def store_file_storage_urls(job_id: str, file_urls: List[Dict]):
             "updated_at": datetime.utcnow().isoformat()
         }
         
+        print(f"store_file_storage_urls: Updating database for job {job_id}...", flush=True)
         result = supabase.table("inbox_jobs").update(update_data).eq("id", job_id).execute()
+        print(f"store_file_storage_urls: Database update completed for job {job_id}", flush=True)
         
         # Verify it was stored correctly by reading it back
+        print(f"store_file_storage_urls: Verifying storage for job {job_id}...", flush=True)
         verify_job = get_job(job_id)
         if verify_job:
             stored_value = verify_job.get("file_storage_urls")
+            print(f"store_file_storage_urls: Retrieved value type: {type(stored_value)}, is None: {stored_value is None}", flush=True)
+            if stored_value is not None:
+                print(f"store_file_storage_urls: Stored value length: {len(str(stored_value))}", flush=True)
+                print(f"store_file_storage_urls: First 200 chars: {str(stored_value)[:200]}", flush=True)
             if isinstance(stored_value, str) and stored_value.startswith('"'):
                 # Still stored as string, try alternative method
+                print(f"WARNING: Value still stored as string for job {job_id}", flush=True)
                 logger.warning(f"Value still stored as string for job {job_id}, trying alternative method")
                 # Use raw SQL via RPC (if available) or direct SQL
                 # For now, the parsing code should handle the string format
                 pass
+        else:
+            print(f"ERROR: Could not verify job {job_id} after storage", flush=True)
         
+        print(f"SUCCESS: Stored file storage URLs for job {job_id} ({len(file_urls)} files)", flush=True)
         logger.info(f"Stored file storage URLs for job {job_id} ({len(file_urls)} files)")
         
     except Exception as e:
-        logger.error(f"Error storing file storage URLs for job {job_id}: {e}")
+        print(f"ERROR: Exception storing file storage URLs for job {job_id}: {e}", flush=True)
         import traceback
+        print(traceback.format_exc(), flush=True)
+        logger.error(f"Error storing file storage URLs for job {job_id}: {e}")
         logger.error(traceback.format_exc())
         raise
 
