@@ -90,6 +90,10 @@ log_memory_usage("(startup)")
 # This allows synchronous I/O operations to run without blocking the async event loop
 TEXT_EXTRACTION_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="text_extract")
 
+# Thread pool executor for blocking I/O operations (Supabase uploads)
+# This prevents file uploads from blocking the async event loop
+STORAGE_UPLOAD_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="storage_upload")
+
 # ============================================================================
 # JOB-BASED ARCHITECTURE - Decouples HTTP requests from long-running processing
 # ============================================================================
@@ -751,46 +755,73 @@ async def classify_documents_async(
     # Create job in Supabase database first
     job_id = create_job(endpoint_type="classify", total_files=len(files), user_id=user_id)
     
-    # Upload files to Supabase Storage and store URLs
-    file_urls = []
+    # Read all files into memory quickly (async, fast)
+    # This is fast because we're just reading bytes, not processing
+    file_data_list = []
     for file in files:
         file_bytes = await file.read()
         file_size = len(file_bytes)
-        
-        # Upload file to Supabase Storage
-        storage_url = upload_file_to_storage(job_id, file.filename, file_bytes)
-        
-        if storage_url:
-            # Store storage URL
-            file_urls.append({
-                "filename": file.filename,
-                "storage_url": storage_url,  # Supabase Storage public URL
-                "suffix": Path(file.filename).suffix,
-                "size": file_size
-            })
-        else:
-            # Fallback: if storage upload fails, log error but continue
-            logger.error(f"Failed to upload {file.filename} to Supabase Storage, falling back to local storage")
-            # Fallback to local filesystem (backward compatibility)
-            job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
-            job_dir.mkdir(parents=True, exist_ok=True)
-            file_path = job_dir / file.filename
-            with open(file_path, "wb") as f:
-                f.write(file_bytes)
-            file_urls.append({
-                "filename": file.filename,
-                "file_path": str(file_path),  # Local path (fallback)
-                "suffix": Path(file.filename).suffix,
-                "size": file_size
-            })
+        file_data_list.append({
+            "filename": file.filename,
+            "bytes": file_bytes,
+            "size": file_size,
+            "suffix": Path(file.filename).suffix
+        })
     
-    # Store file storage URLs in Supabase (preferred) or file paths (fallback)
-    if any("storage_url" in f for f in file_urls):
-        # Use new storage URLs format
-        store_file_storage_urls(job_id, file_urls)
-    else:
-        # Fallback to old file_data format
-        store_file_data(job_id, file_urls)
+    # Upload files to Supabase Storage in background thread pool
+    # This prevents blocking the async event loop
+    def upload_files_background():
+        """Upload files to storage and update DB - runs in thread pool"""
+        file_urls = []
+        for file_data in file_data_list:
+            try:
+                # Upload file to Supabase Storage (blocking operation)
+                storage_url = upload_file_to_storage(job_id, file_data["filename"], file_data["bytes"])
+                
+                if storage_url:
+                    file_urls.append({
+                        "filename": file_data["filename"],
+                        "storage_url": storage_url,
+                        "suffix": file_data["suffix"],
+                        "size": file_data["size"]
+                    })
+                else:
+                    # Fallback: local filesystem
+                    logger.error(f"Failed to upload {file_data['filename']} to Supabase Storage, falling back to local storage")
+                    job_dir = Path(tempfile.gettempdir()) / "inbox_jobs" / job_id
+                    job_dir.mkdir(parents=True, exist_ok=True)
+                    file_path = job_dir / file_data["filename"]
+                    with open(file_path, "wb") as f:
+                        f.write(file_data["bytes"])
+                    file_urls.append({
+                        "filename": file_data["filename"],
+                        "file_path": str(file_path),
+                        "suffix": file_data["suffix"],
+                        "size": file_data["size"]
+                    })
+            except Exception as e:
+                logger.error(f"Error uploading {file_data['filename']}: {e}")
+                # Continue with other files
+        
+        # Store file URLs in database
+        if file_urls:
+            try:
+                if any("storage_url" in f for f in file_urls):
+                    store_file_storage_urls(job_id, file_urls)
+                else:
+                    store_file_data(job_id, file_urls)
+            except Exception as e:
+                logger.error(f"Failed to store file data for job {job_id}: {e}")
+                # Update job with error but don't fail the request
+                from job_service import update_job_status, JobStatus
+                update_job_status(job_id, JobStatus.FAILED, error=f"Failed to store file data: {str(e)}")
+    
+    # Submit upload task to thread pool (non-blocking)
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(STORAGE_UPLOAD_EXECUTOR, upload_files_background)
+    
+    # Return immediately - files will be uploaded in background
+    # Worker will wait for files to be ready before processing
     
     # Worker process will pick up this job from the database
     
@@ -862,13 +893,21 @@ async def analyze_multiple_async(
                 "size": file_size
             })
     
+    # Ensure we have file data to store
+    if not file_urls:
+        raise HTTPException(status_code=500, detail="Failed to process files. No file data to store.")
+    
     # Store file storage URLs in Supabase (preferred) or file paths (fallback)
-    if any("storage_url" in f for f in file_urls):
-        # Use new storage URLs format
-        store_file_storage_urls(job_id, file_urls)
-    else:
-        # Fallback to old file_data format
-        store_file_data(job_id, file_urls)
+    try:
+        if any("storage_url" in f for f in file_urls):
+            # Use new storage URLs format
+            store_file_storage_urls(job_id, file_urls)
+        else:
+            # Fallback to old file_data format
+            store_file_data(job_id, file_urls)
+    except Exception as e:
+        logger.error(f"Failed to store file data for job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to store file data: {str(e)}")
     
     # Worker process will pick up this job from the database
     

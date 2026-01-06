@@ -84,41 +84,64 @@ class RequestTimeoutHandler:
             return max(0, self.timeout_seconds - (time.time() - self.start_time))
         return self.timeout_seconds
 
-async def process_classify_job(job: Dict):
-    """Process a classification job"""
+def is_transient_error(error: Exception) -> bool:
+    """Check if an error is a transient infrastructure error that should be retried"""
+    error_str = str(error).lower()
+    error_type = type(error).__name__
+    
+    # Supabase connection errors
+    if "502" in error_str or "gateway error" in error_str or "network connection lost" in error_str:
+        return True
+    if "connection" in error_str and ("lost" in error_str or "timeout" in error_str or "reset" in error_str):
+        return True
+    if error_type in ["ConnectionError", "TimeoutError", "APIError"]:
+        # Check if it's a 502/503/504 error
+        if hasattr(error, "code"):
+            if error.code in [502, 503, 504]:
+                return True
+        if "502" in error_str or "503" in error_str or "504" in error_str:
+            return True
+    
+    return False
+
+async def process_classify_job(job: Dict, retry_count: int = 0, max_retries: int = 3):
+    """Process a classification job with retry logic for transient errors"""
     job_id = job["id"]
     endpoint_type = job.get("endpoint_type", "classify")
     
     try:
-        print(f"Processing job {job_id} (type: {endpoint_type})", flush=True)
-        logger.info(f"Processing job {job_id} (type: {endpoint_type})")
+        print(f"Processing job {job_id} (type: {endpoint_type}, retry: {retry_count}/{max_retries})", flush=True)
+        logger.info(f"Processing job {job_id} (type: {endpoint_type}, retry: {retry_count}/{max_retries})")
         update_job_status(job_id, JobStatus.PROCESSING, progress=0)
         
-        # Get file data from job
+        # Get file data from job with retry logic
         print(f"Getting file data for job {job_id}...", flush=True)
-        print(f"Job passed to function - file_storage_urls in job dict: {'file_storage_urls' in job}", flush=True)
-        if 'file_storage_urls' in job:
-            print(f"Job file_storage_urls type: {type(job.get('file_storage_urls'))}, value: {str(job.get('file_storage_urls'))[:200] if job.get('file_storage_urls') else 'None'}", flush=True)
+        file_data = None
+        for attempt in range(max_retries + 1):
+            try:
+                # IMPORTANT: Always call get_file_data() which fetches fresh data from database
+                file_data = get_file_data(job_id)
+                if file_data:
+                    break
+                # If no data but no exception, wait a bit (files might still be uploading)
+                if attempt < max_retries:
+                    print(f"  No file data yet, waiting 2 seconds (attempt {attempt + 1}/{max_retries + 1})...", flush=True)
+                    await asyncio.sleep(2)
+            except Exception as e:
+                if is_transient_error(e) and attempt < max_retries:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                    print(f"  Transient error getting file data (attempt {attempt + 1}/{max_retries + 1}): {e}", flush=True)
+                    print(f"  Retrying in {wait_time} seconds...", flush=True)
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    raise
         
-        # IMPORTANT: Always call get_file_data() which fetches fresh data from database
-        # Don't rely on job dict passed to function - it might be stale
-        file_data = get_file_data(job_id)
         print(f"File data result type: {type(file_data)}, length: {len(file_data) if file_data else 0}", flush=True)
         if file_data:
             print(f"SUCCESS: Got file data, first file: {file_data[0].get('filename') if file_data else 'None'}", flush=True)
         if not file_data:
-            print(f"ERROR: No file data found for job {job_id}", flush=True)
-            # Log the full job data for debugging
-            print(f"Full job data keys: {list(job.keys())}", flush=True)
-            print(f"Job file_storage_urls: {job.get('file_storage_urls')}", flush=True)
-            print(f"Job file_data: {job.get('file_data')}", flush=True)
-            # Try to get fresh data directly
-            print(f"Attempting to get fresh job data from database...", flush=True)
-            from job_service import get_job
-            fresh_job = get_job(job_id)
-            if fresh_job:
-                print(f"Fresh job file_storage_urls: {fresh_job.get('file_storage_urls')}", flush=True)
-                print(f"Fresh job file_storage_urls type: {type(fresh_job.get('file_storage_urls'))}", flush=True)
+            print(f"ERROR: No file data found for job {job_id} after {max_retries + 1} attempts", flush=True)
             raise ValueError("No file data found for job")
         
         print(f"Found {len(file_data)} files for job {job_id}", flush=True)
@@ -296,7 +319,20 @@ async def process_classify_job(job: Dict):
         print(traceback.format_exc(), flush=True)
         logger.error(f"Job {job_id} failed: {error_msg}")
         logger.error(traceback.format_exc())
-        update_job_status(job_id, JobStatus.FAILED, error=error_msg)
+        
+        # Check if this is a transient error that should be retried
+        if is_transient_error(e) and retry_count < max_retries:
+            wait_time = 2 ** retry_count  # Exponential backoff
+            print(f"TRANSIENT ERROR detected - will retry job {job_id} in {wait_time} seconds (retry {retry_count + 1}/{max_retries})", flush=True)
+            # Reset job to pending for retry
+            update_job_status(job_id, JobStatus.PENDING, error=None)
+            # Wait before retry
+            await asyncio.sleep(wait_time)
+            # Retry the job
+            return await process_classify_job(job, retry_count=retry_count + 1, max_retries=max_retries)
+        else:
+            # Permanent failure - mark as failed
+            update_job_status(job_id, JobStatus.FAILED, error=error_msg)
         
         # Clean up files even on failure
         try:
@@ -480,7 +516,16 @@ async def process_analyze_job(job: Dict):
         print(traceback.format_exc(), flush=True)
         logger.error(f"Analyze job {job_id} failed: {error_msg}")
         logger.error(traceback.format_exc())
-        update_job_status(job_id, JobStatus.FAILED, error=error_msg)
+        
+        # Check if this is a transient error that should be retried
+        if is_transient_error(e) and retry_count < max_retries:
+            wait_time = 2 ** retry_count
+            print(f"TRANSIENT ERROR detected - will retry job {job_id} in {wait_time} seconds (retry {retry_count + 1}/{max_retries})", flush=True)
+            update_job_status(job_id, JobStatus.PENDING, error=None)
+            await asyncio.sleep(wait_time)
+            return await process_analyze_job(job, retry_count=retry_count + 1, max_retries=max_retries)
+        else:
+            update_job_status(job_id, JobStatus.FAILED, error=error_msg)
         
         # Clean up files even on failure
         try:
@@ -514,7 +559,9 @@ async def worker_loop():
             pending_jobs = get_pending_jobs(limit=10)
             
             if pending_jobs:
-                print(f"Found {len(pending_jobs)} pending job(s)", flush=True)
+                print(f"=" * 80, flush=True)
+                print(f"FOUND {len(pending_jobs)} PENDING JOB(S) - STARTING PROCESSING", flush=True)
+                print(f"=" * 80, flush=True)
                 logger.info(f"Found {len(pending_jobs)} pending job(s)")
                 
                 # Process jobs concurrently (up to 3 at a time)
@@ -523,14 +570,18 @@ async def worker_loop():
                 for job in pending_jobs[:3]:
                     endpoint_type = job.get("endpoint_type", "classify")
                     job_id = job.get("id", "unknown")
-                    print(f"Dispatching job {job_id} (type: {endpoint_type})", flush=True)
+                    print(f"DISPATCHING job {job_id} (type: {endpoint_type})", flush=True)
+                    print(f"  Job total_files: {job.get('total_files')}", flush=True)
+                    print(f"  Job created_at: {job.get('created_at')}", flush=True)
                     if endpoint_type == "analyze":
                         tasks.append(process_analyze_job(job))
                     else:
                         tasks.append(process_classify_job(job))
                 
-                print(f"Processing {len(tasks)} job(s) concurrently...", flush=True)
+                print(f"PROCESSING {len(tasks)} job(s) concurrently...", flush=True)
+                print(f"Waiting for tasks to complete...", flush=True)
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+                print(f"Tasks completed. Checking results...", flush=True)
                 
                 # Check for exceptions in results
                 for i, result in enumerate(results):
