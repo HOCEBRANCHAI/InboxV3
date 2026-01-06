@@ -99,7 +99,7 @@ def create_job(
             "batch_id": batch_id,
             "endpoint_type": endpoint_type,
             # IMPORTANT: created jobs are not visible to workers until READY
-            "status": status,
+            "status": status.value,
             "progress": 0,
             "total_files": total_files,
             "processed_files": 0,
@@ -133,7 +133,7 @@ def update_job_status(job_id: str, status: JobStatus, result: Optional[Dict] = N
     
     try:
         update_data = {
-            "status": status,
+            "status": status.value,
             "updated_at": datetime.utcnow().isoformat()
         }
         
@@ -274,7 +274,7 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
     try:
         response = supabase.table("inbox_jobs")\
             .select("*")\
-            .eq("status", JobStatus.READY)\
+            .eq("status", JobStatus.READY.value)\
             .order("created_at", desc=False)\
             .limit(limit)\
             .execute()
@@ -315,7 +315,7 @@ def get_pending_jobs(limit: int = 10) -> List[Dict]:
             try:
                 response = supabase.table("inbox_jobs")\
                     .select("*")\
-                    .eq("status", JobStatus.READY)\
+                    .eq("status", JobStatus.READY.value)\
                     .order("created_at", desc=False)\
                     .limit(limit)\
                     .execute()
@@ -340,14 +340,14 @@ def claim_job(job_id: str) -> Optional[Dict]:
         return None
     try:
         update_data = {
-            "status": JobStatus.PROCESSING,
+            "status": JobStatus.PROCESSING.value,
             "updated_at": datetime.utcnow().isoformat(),
         }
         response = (
             supabase.table("inbox_jobs")
             .update(update_data)
             .eq("id", job_id)
-            .eq("status", JobStatus.READY)
+            .eq("status", JobStatus.READY.value)
             .execute()
         )
         if response.data and len(response.data) > 0:
@@ -774,7 +774,7 @@ def reset_failed_job(job_id: str) -> bool:
         # Reset to READY so a worker can pick it up again
         # (Only do this if inputs already exist; API uses CREATED -> READY gating.)
         update_data = {
-            "status": JobStatus.READY,
+            "status": JobStatus.READY.value,
             "error": None,  # Clear error
             "progress": 0,  # Reset progress
             "processed_files": 0,  # Reset processed files
