@@ -455,17 +455,39 @@ def upload_file_to_storage(job_id: str, filename: str, file_bytes: bytes, bucket
             logger.info(f"Sanitized filename: '{filename}' -> '{sanitized_filename}'")
         
         # Upload file to Supabase Storage
-        response = supabase.storage.from_(bucket_name).upload(
-            path=storage_path,
-            file=file_bytes,
-            file_options={"content-type": "application/octet-stream", "upsert": "true"}
-        )
+        print(f"upload_file_to_storage: Uploading {filename} to {storage_path}...", flush=True)
+        try:
+            response = supabase.storage.from_(bucket_name).upload(
+                path=storage_path,
+                file=file_bytes,
+                file_options={"content-type": "application/octet-stream", "upsert": "true"}
+            )
+            print(f"upload_file_to_storage: Upload response: {response}", flush=True)
+        except Exception as upload_error:
+            print(f"ERROR: Upload failed: {upload_error}", flush=True)
+            import traceback
+            print(traceback.format_exc(), flush=True)
+            logger.error(f"Failed to upload {filename} to Supabase Storage: {upload_error}")
+            return None
         
         # Get public URL
-        public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
-        
-        logger.info(f"Uploaded file {filename} to Supabase Storage: {public_url}")
-        return public_url
+        try:
+            public_url = supabase.storage.from_(bucket_name).get_public_url(storage_path)
+            print(f"upload_file_to_storage: Public URL: {public_url}", flush=True)
+            
+            # Verify file exists by trying to get metadata
+            try:
+                file_info = supabase.storage.from_(bucket_name).list(storage_path)
+                print(f"upload_file_to_storage: File verified in storage", flush=True)
+            except Exception as verify_error:
+                print(f"WARNING: Could not verify file in storage: {verify_error}", flush=True)
+            
+            logger.info(f"Uploaded file {filename} to Supabase Storage: {public_url}")
+            return public_url
+        except Exception as url_error:
+            print(f"ERROR: Failed to get public URL: {url_error}", flush=True)
+            logger.error(f"Failed to get public URL for {filename}: {url_error}")
+            return None
         
     except Exception as e:
         logger.error(f"Error uploading file {filename} to Supabase Storage: {e}")
